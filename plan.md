@@ -115,10 +115,10 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 **Check:** `docker compose up` works and a test Claude call shows up in LangSmith.
 
 ### Phase 1: Text interview with the brief
-- [ ] Graph: `prepare_brief` → review → `plan_questions` → `ask` → answer → `evaluate_answer` → `final_feedback`
-- [ ] Pasted text only; all documents go straight into Claude's context, no embeddings yet
-- [ ] Postgres checkpointer, so a session can be stopped and resumed
-- [ ] Prompts in `prompts/`, rubric in `rubrics/`
+- [x] Graph: `prepare_brief` → review → `plan_questions` → `ask` → answer → `evaluate_answer` → `final_feedback`
+- [x] Pasted text only; all documents go straight into Claude's context, no embeddings yet
+- [x] Postgres checkpointer, so a session can be stopped and resumed
+- [x] Prompts in `prompts/`, rubric in `rubrics/`
 
 **Check:** I approve a brief, then do a typed 5-question interview based on it and get final feedback.
 

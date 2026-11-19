@@ -1,0 +1,33 @@
+# behavioral.yaml - how answers are scored in behavioral / HR interviews (mode "behavioral").
+#
+# Used by evaluate_answer (each answer) and final_feedback (the whole interview), through
+# app/graph/prompts.rubric_text(), which turns this file into text inside the prompt.
+# Each criterion gets a score on the 1-5 scale. To change how answers are judged, edit a
+# description or add a criterion (id, name, description); no code change is needed.
+
+mode: behavioral
+scale:
+  1: poor, missing or off-topic
+  2: weak, vague or mostly generic
+  3: adequate, answers the question with some specifics
+  4: strong, specific and well structured
+  5: excellent, would clearly impress a real interviewer
+criteria:
+  - id: structure
+    name: Structure
+    description: Clear situation, task, action and result, easy to follow when spoken.
+  - id: ownership
+    name: Personal contribution
+    description: Says what the candidate did ("I"), not only the team ("we").
+  - id: specificity
+    name: Specific evidence
+    description: Concrete details, numbers and examples instead of general statements.
+  - id: impact
+    name: Result and learning
+    description: States the outcome, ideally measured, and what was learned.
+  - id: relevance
+    name: Relevance
+    description: Answers the question that was asked and links to what the role needs.
+  - id: communication
+    name: Communication
+    description: Concise, confident, right length for a spoken answer (about 1-2 minutes).

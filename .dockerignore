@@ -1,4 +1,10 @@
-# Files kept out of the Docker build context: secrets, git history, caches, Terraform, audio.
+# .dockerignore - files Docker leaves out when it builds the image (the "build context").
+#
+# Leaving them out makes builds faster and keeps secrets out of the image:
+# - .env: API keys are passed in at run time by docker-compose.yml, never baked into the image.
+# - .git, .venv, __pycache__: history and local caches the app does not need.
+# - infra: Terraform files (Phase 5), used from your machine or CI only.
+# - evals/audio: large test recordings.
 
 .env
 .git

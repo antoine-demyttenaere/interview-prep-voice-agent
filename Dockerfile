@@ -1,5 +1,11 @@
-# Image for the FastAPI app: installs Python deps, runs migrations, then starts uvicorn.
-# Used by docker-compose.yml locally and by ECS in the cloud (Phase 5).
+# Dockerfile - recipe for the "api" image: a small Linux system with Python and the app's packages.
+#
+# Steps: start from the official slim Python 3.12 image, install requirements.txt, copy the code,
+# and on start apply the database migrations, then launch the web server (uvicorn).
+# requirements.txt is copied and installed before the rest of the code so Docker can cache that
+# slow step: changing your code does not reinstall the packages.
+# Locally, docker-compose.yml replaces the start command to add --reload; in the cloud
+# (Phase 5, ECS) this CMD is used as is.
 
 FROM python:3.12-slim
 

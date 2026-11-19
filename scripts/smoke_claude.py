@@ -1,4 +1,8 @@
-"""Phase 0 check: one Claude call per model, each traced in LangSmith.
+"""Smoke test: one tiny Claude call per configured model, to check the key, the models and tracing.
+
+It was the Phase 0 check, and it is the first thing to run when something seems broken: it
+shows whether ANTHROPIC_API_KEY works, whether both model IDs exist, and whether LangSmith
+receives the calls (grouped under one "phase0_smoke_test" trace by @traceable).
 
 Run inside the api container:
     docker compose exec api python scripts/smoke_claude.py

@@ -1,0 +1,29 @@
+# job_post.yaml - how answers are scored in interviews tailored to a job post (mode "job_post").
+#
+# Used by evaluate_answer (each answer) and final_feedback (the whole interview), through
+# app/graph/prompts.rubric_text(), which turns this file into text inside the prompt.
+# Each criterion gets a score on the 1-5 scale. Edit descriptions or add criteria freely.
+
+mode: job_post
+scale:
+  1: poor, missing or off-topic
+  2: weak, vague or mostly generic
+  3: adequate, answers the question with some specifics
+  4: strong, specific and well structured
+  5: excellent, would clearly impress a real interviewer
+criteria:
+  - id: role_fit
+    name: Role fit
+    description: Shows the skills and experience the job post asks for.
+  - id: evidence
+    name: Specific evidence
+    description: Backs claims with concrete past work, numbers and examples.
+  - id: gap_handling
+    name: Handling gaps
+    description: Addresses missing experience honestly, with a credible plan or transferable skills.
+  - id: motivation
+    name: Motivation
+    description: Credible reasons for wanting this role at this company, based on knowing the company.
+  - id: communication
+    name: Communication
+    description: Concise, structured, right length for a spoken answer.

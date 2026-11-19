@@ -1,4 +1,15 @@
-"""App settings loaded from env vars / .env: database URL, API keys, model IDs."""
+"""Settings: every configurable value of the app, read from environment variables or .env.
+
+pydantic-settings matches each field below to the environment variable of the same name,
+ignoring case: MODEL_TURN fills model_turn, NUM_QUESTIONS fills num_questions, and so on.
+When a variable is not set, the default written here is used.
+
+Other code calls get_settings() instead of reading os.environ directly. @lru_cache makes it
+build the Settings object once and return the same one afterwards.
+
+To change a model or a limit: set it in .env (e.g. NUM_QUESTIONS=3), then
+`docker compose up -d --force-recreate api` so the container picks up the new value.
+"""
 
 from functools import lru_cache
 
@@ -17,6 +28,14 @@ class Settings(BaseSettings):
     model_reasoning: str = "claude-sonnet-5-5"  # brief + final feedback
 
     langsmith_project: str = "interview-prep-voice-agent"
+
+    num_questions: int = 5  # planned main questions per session
+    max_followups: int = 2  # follow-ups allowed per main question
+
+    @property
+    def psycopg_url(self) -> str:
+        """Plain libpq URL (no SQLAlchemy driver suffix) for psycopg / the checkpointer."""
+        return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
 @lru_cache

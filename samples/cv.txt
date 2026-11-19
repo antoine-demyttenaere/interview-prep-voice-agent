@@ -1,0 +1,23 @@
+Fictional sample CV for testing the app. Alex Moreau is not a real person.
+
+ALEX MOREAU
+Backend Engineer - Lyon, France
+
+EXPERIENCE
+
+Backend Engineer, Parcelio (B2C delivery app), 2021 - present
+- Built and maintain the order service in Python (Django, later FastAPI), about 20k requests per minute at peak
+- Moved order notifications from cron jobs to RabbitMQ, cutting notification delay from 5 minutes to under 10 seconds
+- Reduced p95 latency of the order history endpoint from 1.8 s to 220 ms by redesigning indexes in PostgreSQL
+- On-call rotation; led the response to a 3-hour outage caused by a failed migration and wrote the postmortem
+
+Software Developer, AgriData (agricultural analytics), 2018 - 2021
+- Python data pipelines and REST APIs for farm sensor data
+- Introduced automated tests and CI; test coverage went from 10% to 70%
+
+EDUCATION
+MSc Computer Science, INSA Lyon, 2018
+
+SKILLS
+Python, FastAPI, Django, PostgreSQL, RabbitMQ, Docker, AWS (EC2, S3), Git
+Languages: French (native), English (fluent), Spanish (basic)

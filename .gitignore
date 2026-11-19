@@ -1,4 +1,10 @@
-# Files git should never track: secrets (.env), Python caches, local tool state, recorded audio.
+# .gitignore - files git must never track (they never get committed).
+#
+# - .env holds your real API keys: committing it would leak them (.env.example is the template).
+# - __pycache__/, *.pyc: compiled Python files, recreated automatically.
+# - .venv/, .pytest_cache/, .langgraph_api/: local tool folders (virtualenv, pytest, LangGraph Studio).
+# - evals/audio/*.wav: recorded test audio (Phase 4), large and personal.
+# - brief_edit.json: temporary file the CLI writes when you edit a brief by hand.
 
 .env
 __pycache__/
@@ -7,3 +13,4 @@ __pycache__/
 .pytest_cache/
 .langgraph_api/
 evals/audio/*.wav
+brief_edit.json

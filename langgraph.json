@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "interviewer": "./app/graph/build.py:graph"
+  },
+  "env": ".env"
+}

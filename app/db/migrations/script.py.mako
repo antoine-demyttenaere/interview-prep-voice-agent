@@ -1,4 +1,6 @@
-## Template Alembic uses to generate each new migration file (alembic revision).
+## script.py.mako - the template Alembic fills in to create each new migration file
+## (`alembic revision -m "..."`). Alembic replaces the ${...} parts: message, revision ids, date.
+## The new file has an upgrade() (apply the change) and a downgrade() (undo it) for you to write.
 ## Lines starting with ## are Mako comments and are not copied into the output.
 """${message}
 

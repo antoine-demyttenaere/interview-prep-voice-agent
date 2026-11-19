@@ -1,0 +1,29 @@
+Fictional sample job post for testing the app. Northwind Logistics is not a real company.
+
+Senior Backend Engineer - Northwind Logistics (Lyon, hybrid)
+
+About us
+Northwind Logistics runs route planning and real-time tracking for 400 regional delivery companies across France and Spain. Our platform handles 2 million parcel events a day. We are 60 people, 18 in engineering, and we just raised a Series B to expand into Portugal and Italy.
+
+The role
+You will join the Tracking team (5 engineers) and own services that ingest carrier events, keep parcel status consistent, and expose it to customers through our public API.
+
+What you will do
+- Design and run Python services (FastAPI) on AWS (ECS, RDS Postgres, SQS)
+- Improve reliability: our tracking API has a 99.9% SLO and we missed it twice last quarter
+- Lead the design of our event pipeline as volume triples over the next 18 months
+- Mentor two mid-level engineers and take part in on-call (one week in six)
+- Work with product and customer success to prioritise integrations with new carriers
+
+What we are looking for
+- 5+ years building backend services in production, Python preferred
+- Solid PostgreSQL: schema design, indexing, query tuning
+- Experience with message queues and event-driven systems
+- You have owned incidents end to end and written postmortems
+- Clear communication in English; French or Spanish is a plus
+
+Process
+1. 30-minute call with Camille Martin (Talent Acquisition)
+2. 60-minute behavioral and experience interview with Julien Roux (Engineering Manager, Tracking)
+3. System design interview
+4. Meet the team

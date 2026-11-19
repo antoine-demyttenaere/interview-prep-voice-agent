@@ -1,5 +1,10 @@
-# Phase 0 check: builds and starts the stack, waits for /health, then runs the Claude smoke test.
-# Usage: ./scripts/check-phase0.ps1 (needs .env with ANTHROPIC_API_KEY and LANGSMITH_API_KEY).
+# check-phase0.ps1 - one command that checks the whole Phase 0 setup on Windows.
+#
+# 1. Stops if .env is missing.
+# 2. Builds and starts the containers (docker compose up -d --build).
+# 3. Waits until GET /health answers, i.e. the API and the database are up.
+# 4. Runs scripts/smoke_claude.py: one Claude call per model, traced in LangSmith.
+# Usage: ./scripts/check-phase0.ps1 (needs ANTHROPIC_API_KEY and LANGSMITH_API_KEY in .env)
 
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)

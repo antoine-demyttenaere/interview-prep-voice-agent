@@ -1,11 +1,25 @@
-# Python dependencies for the api container (installed in the Dockerfile).
+# requirements.txt - the Python packages the app needs, installed by the Dockerfile (pip install -r).
+#
+# Web: fastapi (the API framework), uvicorn (the server that runs it), pydantic-settings (reads .env).
+# Database: sqlalchemy (Python objects <-> SQL), psycopg + psycopg-pool (Postgres driver and
+#   connection pool), alembic (table migrations), pgvector (vector column type, used from Phase 3).
+# AI: anthropic (Claude API), langsmith (tracing), langgraph + its Postgres checkpointer
+#   (the interview graph), pyyaml (reads rubrics/*.yaml).
+# ">=" means "this version or newer". After editing this file: docker compose up -d --build
 
 fastapi>=0.115
 uvicorn[standard]>=0.32
 pydantic-settings>=2.6
 sqlalchemy>=2.0.36
 psycopg[binary]>=3.2
+psycopg-pool>=3.2
 alembic>=1.14
 pgvector>=0.3
 anthropic>=0.70
 langsmith>=0.4
+langgraph>=0.6
+langgraph-checkpoint-postgres>=2.0
+pyyaml>=6.0
+
+# Tests (kept in the same image for now)
+pytest>=8.3

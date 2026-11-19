@@ -1,0 +1,405 @@
+# cases.yaml - the test answers for the "answer scoring + follow-ups" evaluation (fictional).
+#
+# Each case is one moment of an interview: the planned question, the exchange so far on that
+# question (the last candidate turn is the answer being scored), and how many follow-ups were
+# already used. `expected` is what a fair interviewer would do:
+#   overall:   [min, max] of the overall 1-5 score that counts as right
+#   follow_up: true (should probe further), false (should move on), or null (either is fine)
+# `why` explains the label in one line. The candidate is the fictional Alex Moreau
+# (samples/cv.txt) interviewing at the fictional Northwind Logistics (brief.json).
+#
+# Labelling policy (agreed before the first run):
+#   - complete, specific answer with own actions and a result -> 4-5, no follow-up
+#   - adequate but thin                                     -> 3-4, either
+#   - generic (a habit or values, no real situation)        -> 1-2, follow-up
+#   - "we" instead of "I", or no result                     -> 2-3, follow-up
+#   - off-topic (answers another question)                  -> 1-2, follow-up to redirect
+#   - no answer ("skip", "I don't know", "pass")             -> 1, move on (no follow-up)
+#   - cut off mid-sentence (speech recognition)              -> 1-2, follow-up
+#   - 2 follow-ups already used (the cap)                    -> no follow-up, whatever the answer
+# Real answers from your own sessions live in evals/private/ (git-ignored) with the same shape.
+
+mode: behavioral
+language: en
+
+cases:
+  # ---------- strong, complete answers -> 4-5, move on ----------
+  - id: strong-incident
+    tags: [strong]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: To start, tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          At Parcelio, a schema migration on the orders table locked it during peak hours and the
+          order service was down for about three hours. I was on call, so I led the response: I
+          stopped the deploy, rolled back the migration, and posted updates in the incident channel
+          every fifteen minutes. Afterwards I wrote the postmortem. The root cause was running a
+          blocking ALTER on a 40-million-row table. I changed our process: every migration now runs
+          in a staging copy with production-size data first, and we split big changes into
+          non-blocking steps. We haven't had a migration outage since, in two years.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Situation, own actions, result and lasting change are all there."
+
+  - id: strong-performance
+    tags: [strong]
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    exchange:
+      - interviewer: Can you describe a time you improved performance or reliability, and how you measured it?
+      - candidate: >-
+          The order history endpoint at Parcelio had a p95 of 1.8 seconds and customers complained
+          about the app freezing. I profiled it and found a sequential scan on a 30-million-row table
+          plus an N+1 query in the serializer. I added a composite index on customer id and created
+          date, rewrote the serializer to fetch in one query, and load-tested it before release. The
+          p95 dropped to 220 milliseconds, and the related support tickets went from about twenty a
+          week to two.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Clear problem, own diagnosis and fix, measured before/after."
+
+  - id: strong-mentoring
+    tags: [strong]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: >-
+          At AgriData a junior developer, Léa, was struggling with code reviews: her pull requests
+          came back with thirty comments and she was losing confidence. I proposed weekly pairing
+          sessions of one hour, and we agreed she would split her work into smaller pull requests. I
+          also wrote a short review checklist with her. After two months her pull requests were
+          approved in one round most of the time, and she started reviewing other people's code
+          herself. She told me later it was the reason she stayed.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Specific person, concrete actions by the candidate, visible outcome."
+
+  - id: strong-disagreement
+    tags: [strong]
+    planned_question: Describe a disagreement with a teammate or product owner and how you resolved it.
+    exchange:
+      - interviewer: Tell me about a disagreement with a teammate or a product owner.
+      - candidate: >-
+          Our product owner wanted real-time push notifications for every order status, built in two
+          weeks. I disagreed because our cron-based setup couldn't do it reliably and I thought we'd
+          ship something flaky. Instead of just saying no, I wrote a one-page comparison: a quick
+          hack on the cron jobs versus moving to RabbitMQ in four weeks. I showed the risk of each
+          with numbers from our logs. We agreed on RabbitMQ with a two-week first milestone for the
+          most important statuses. It shipped on time, and notification delay went from five
+          minutes to under ten seconds.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Real disagreement, constructive approach, outcome with numbers."
+
+  - id: strong-motivation
+    tags: [strong]
+    planned_question: Why Northwind Logistics, and why this role now?
+    exchange:
+      - interviewer: Why Northwind Logistics, and why this role now?
+      - candidate: >-
+          Two reasons. First, the problem: two million parcel events a day that must stay consistent
+          is exactly the kind of event-driven work I enjoyed most at Parcelio with RabbitMQ, and it's
+          about to triple with the expansion to Portugal and Italy. Second, the timing: I've been the
+          person who fixes reliability issues, and I now want to own reliability as a goal, like your
+          99.9% target on the tracking API, and help two mid-level engineers grow while doing it.
+          At Parcelio that scale isn't coming, so this is the right moment to move.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Specific to the company and role, links own experience to their needs."
+
+  - id: strong-motivation-fr
+    tags: [strong, french]
+    language: fr
+    planned_question: Why Northwind Logistics, and why this role now?
+    exchange:
+      - interviewer: Pourquoi Northwind Logistics, et pourquoi ce poste maintenant ?
+      - candidate: >-
+          Pour deux raisons. D'abord le problème : deux millions d'événements de colis par jour qui
+          doivent rester cohérents, c'est exactement le type de travail événementiel que j'ai aimé
+          chez Parcelio avec RabbitMQ, et le volume va tripler avec l'expansion au Portugal et en
+          Italie. Ensuite le moment : j'ai souvent été celui qui corrige les problèmes de fiabilité,
+          et je veux maintenant porter la fiabilité comme objectif, comme votre cible de 99,9 % sur
+          l'API de suivi, tout en faisant progresser deux ingénieurs. Chez Parcelio cette échelle
+          n'arrivera pas, donc c'est le bon moment.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "Same strong answer in French; the score must not drop because of the language."
+
+  # ---------- adequate answers -> 3-4, follow-up either way ----------
+  - id: adequate-incident
+    tags: [adequate]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          We had an outage at Parcelio after a migration, about three hours. I was on call, I rolled
+          back the migration and kept people updated. Afterwards I wrote the postmortem and we started
+          testing migrations on a staging copy before running them in production.
+    expected: {overall: [3, 4], follow_up: null}
+    why: "Has actions and a change, but thin on detail and on the result."
+
+  - id: adequate-performance
+    tags: [adequate]
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    exchange:
+      - interviewer: Describe a time you improved performance or reliability, and how you measured it.
+      - candidate: >-
+          I made the order history page a lot faster by redesigning the indexes in PostgreSQL. It
+          went from almost two seconds to around two hundred milliseconds at the p95. I measured it
+          with our APM dashboards.
+    expected: {overall: [3, 4], follow_up: null}
+    why: "Result and measurement given, but no diagnosis or reasoning."
+
+  - id: adequate-mentoring
+    tags: [adequate]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: >-
+          At AgriData I paired regularly with a junior developer who was new to Python. I reviewed
+          her code in detail and explained the patterns we used. After a few months she was much
+          more autonomous and took on features on her own.
+    expected: {overall: [3, 4], follow_up: null}
+    why: "Real example and outcome, but generic actions and no specifics."
+
+  - id: adequate-disagreement
+    tags: [adequate]
+    planned_question: Describe a disagreement with a teammate or product owner and how you resolved it.
+    exchange:
+      - interviewer: Tell me about a disagreement you had with someone at work.
+      - candidate: >-
+          A colleague wanted to use MongoDB for a new feature and I thought PostgreSQL was a better
+          fit because our data was relational. We discussed it in a design meeting, I showed how
+          the queries would look in both, and we went with PostgreSQL.
+    expected: {overall: [3, 4], follow_up: null}
+    why: "Clear disagreement and resolution, but short and no outcome after the decision."
+
+  # ---------- weak, generic answers -> 2-3, follow-up ----------
+  - id: weak-generic-incident
+    tags: [weak]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          I've handled quite a few incidents. Usually I try to stay calm, find the root cause,
+          communicate with the team and fix it. After that we always do a postmortem to learn from it.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Describes a habit, not one incident; no specifics at all."
+
+  - id: weak-generic-mentoring
+    tags: [weak]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: >-
+          I really like helping people. I always make myself available for questions and I think
+          sharing knowledge is very important in a team.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Values only, no situation, no action, no result."
+
+  - id: weak-generic-motivation
+    tags: [weak]
+    planned_question: Why Northwind Logistics, and why this role now?
+    exchange:
+      - interviewer: Why Northwind Logistics, and why this role now?
+      - candidate: >-
+          It's a great company with interesting challenges, and I'm looking for a new opportunity to
+          grow and learn new things. The role matches my profile.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Could be said about any company; nothing specific to Northwind."
+
+  - id: weak-generic-es
+    tags: [weak, spanish]
+    language: es
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    exchange:
+      - interviewer: Cuéntame una vez en la que mejoraste el rendimiento o la fiabilidad de un sistema.
+      - candidate: >-
+          Siempre intento que los sistemas sean rápidos y fiables. Optimizo las consultas cuando hace
+          falta y uso buenas prácticas.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Generic answer in Spanish; must be judged as weak, like in English."
+
+  # ---------- missing the result -> 2-3, follow-up ----------
+  - id: no-result-performance
+    tags: [no_result]
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    exchange:
+      - interviewer: Describe a time you improved performance or reliability, and how you measured it.
+      - candidate: >-
+          The order history endpoint was slow, so I looked at the query plans in PostgreSQL and saw
+          it was doing a sequential scan. I added a composite index and rewrote the serializer to
+          avoid the N+1 queries, then we released it.
+    expected: {overall: [2, 3], follow_up: true}
+    why: "Good actions, but never says what changed or how it was measured (the question asks)."
+
+  - id: no-result-disagreement
+    tags: [no_result]
+    planned_question: Describe a disagreement with a teammate or product owner and how you resolved it.
+    exchange:
+      - interviewer: Tell me about a disagreement with a product owner.
+      - candidate: >-
+          The product owner wanted real-time notifications in two weeks and I thought that wasn't
+          realistic with our setup. I wrote a comparison of the options and we discussed it together
+          in a meeting.
+    expected: {overall: [2, 3], follow_up: true}
+    why: "Stops before the resolution: what was decided and what happened."
+
+  - id: no-result-mentoring
+    tags: [no_result]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: >-
+          A junior developer on my team was struggling with code reviews, so I set up weekly pairing
+          sessions with her and we wrote a review checklist together.
+    expected: {overall: [2, 3], follow_up: true}
+    why: "Actions without any outcome for the colleague."
+
+  # ---------- "we" instead of "I" -> 2-3, follow-up ----------
+  - id: we-not-i-incident
+    tags: [we_not_i]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          We had a three-hour outage after a migration. The team rolled it back, we communicated with
+          support, and then we wrote a postmortem. We decided to test all migrations on a copy of
+          production first, and we haven't had the problem again.
+    expected: {overall: [2, 3], follow_up: true}
+    why: "The question asks what the candidate led; their own role is invisible."
+
+  - id: we-not-i-performance
+    tags: [we_not_i]
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    exchange:
+      - interviewer: Describe a time you improved performance or reliability.
+      - candidate: >-
+          Our team moved the notifications from cron jobs to RabbitMQ, and the delay went from five
+          minutes to under ten seconds. It was a big project for us and we were proud of it.
+    expected: {overall: [2, 3], follow_up: true}
+    why: "Strong result, but no sign of what the candidate personally did."
+
+  # ---------- off-topic -> 1-2, follow-up to redirect ----------
+  - id: off-topic-incident
+    tags: [off_topic]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          I really enjoyed my time at AgriData. We built data pipelines for farm sensors and I
+          introduced automated tests and CI, which brought the coverage from ten to seventy percent.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "A good story, but about testing, not an incident."
+
+  - id: off-topic-mentoring
+    tags: [off_topic]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: >-
+          The thing I'm proudest of is the RabbitMQ migration: notifications went from five minutes
+          to under ten seconds, and support tickets about late notifications almost disappeared.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Answers a different question (achievement, not mentoring)."
+
+  - id: off-topic-motivation
+    tags: [off_topic]
+    planned_question: Why Northwind Logistics, and why this role now?
+    exchange:
+      - interviewer: Why Northwind Logistics, and why this role now?
+      - candidate: >-
+          In my current job I mainly work with Django and FastAPI, and I've used PostgreSQL, Redis
+          and RabbitMQ in production. I also have some experience with Docker and AWS.
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Lists skills instead of explaining motivation."
+
+  # ---------- no answer -> 1, move on ----------
+  - id: no-answer-skip
+    tags: [no_answer]
+    planned_question: Describe a disagreement with a teammate or product owner and how you resolved it.
+    exchange:
+      - interviewer: Tell me about a disagreement with a teammate or a product owner.
+      - candidate: skip
+    expected: {overall: [1, 1], follow_up: false}
+    why: "The candidate chose to skip; a follow-up would just repeat the question."
+
+  - id: no-answer-dont-know
+    tags: [no_answer]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: I don't know, I can't think of an example right now.
+    expected: {overall: [1, 1], follow_up: false}
+    why: "Explicitly has nothing to add; move on."
+
+  - id: no-answer-yes
+    tags: [no_answer]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: "yes"
+    expected: {overall: [1, 1], follow_up: null}
+    why: "Not an answer; probing or moving on are both reasonable."
+
+  # ---------- cut off mid-sentence -> 1-2, follow-up ----------
+  - id: cut-off-motivation
+    tags: [cut_off]
+    planned_question: Why Northwind Logistics, and why this role now?
+    exchange:
+      - interviewer: Why Northwind Logistics, and why this role now?
+      - candidate: So what I'd really love to do is to
+    expected: {overall: [1, 2], follow_up: true}
+    why: "The recording stopped mid-sentence; ask the candidate to continue."
+
+  - id: cut-off-incident
+    tags: [cut_off]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: At Parcelio we had a three-hour outage after a failed migration, and I was the one on call, so I
+    expected: {overall: [1, 2], follow_up: true}
+    why: "Promising start, cut off before any action; ask to continue."
+
+  # ---------- follow-up that completes the answer -> judged on the whole exchange ----------
+  - id: followup-completes-result
+    tags: [followup_answer]
+    planned_question: Describe a time you improved performance or reliability, and how you measured the result.
+    followups_used: 1
+    exchange:
+      - interviewer: Describe a time you improved performance or reliability, and how you measured it.
+      - candidate: >-
+          The order history endpoint was slow, so I looked at the query plans and saw a sequential
+          scan. I added a composite index and fixed an N+1 query in the serializer.
+      - interviewer: And what difference did that make? How did you know it worked?
+      - candidate: >-
+          The p95 went from 1.8 seconds to 220 milliseconds, which I checked in our APM before and
+          after the release, and support tickets about the slow app dropped from about twenty a week
+          to two.
+    expected: {overall: [4, 5], follow_up: false}
+    why: "The follow-up got the missing result; the whole exchange is now complete."
+
+  - id: followup-completes-ownership
+    tags: [followup_answer]
+    planned_question: Tell me about a production incident you led, and what you changed afterwards.
+    followups_used: 1
+    exchange:
+      - interviewer: Tell me about a production incident you led, and what you changed afterwards.
+      - candidate: >-
+          We had a three-hour outage after a migration, the team rolled it back and we wrote a
+          postmortem.
+      - interviewer: What did you personally do during that incident?
+      - candidate: >-
+          I was on call, so I made the call to stop the deploy and roll back, and I posted updates
+          for support every fifteen minutes. Then I wrote the postmortem and proposed testing every
+          migration on a production-size copy, which we now do.
+    expected: {overall: [3, 5], follow_up: false}
+    why: "The follow-up clarified the candidate's role and the change made."
+
+  # ---------- cap reached -> no follow-up ----------
+  - id: cap-reached-still-vague
+    tags: [cap]
+    planned_question: Tell me about a time you helped a less experienced colleague grow.
+    followups_used: 2
+    exchange:
+      - interviewer: Tell me about a time you helped a less experienced colleague grow.
+      - candidate: I always help people when they ask.
+      - interviewer: Can you think of one specific person you helped?
+      - candidate: Not really one person, I help everyone a bit.
+      - interviewer: What about someone junior at AgriData?
+      - candidate: Yes, I helped some juniors there too.
+    expected: {overall: [1, 2], follow_up: false}
+    why: "Two follow-ups already used (the cap): move on even though it is still vague."

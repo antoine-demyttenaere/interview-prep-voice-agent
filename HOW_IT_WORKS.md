@@ -117,7 +117,7 @@ scripts/
 web/
   index.html           The web page: setup (3 steps + My CV), brief, interview, feedback
   app.js               Its logic: API calls, click-to-talk recording, audio playback, end / leave
-  style.css            Its look: colors per action, two columns on wide screens, light / dark
+  style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark
 samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
 tests/                 Tests with a fake Claude, fake speech and a fake embedder, on their own database
@@ -153,7 +153,7 @@ You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db
 
 ### Step 1: create the interview and add documents
 
-On the web page (http://localhost:8000), go through the three steps from left to right, one at a time (**Next** / **Back**, a swipe, or a click on the step bar): 1 the interview, 2 the company and the job (the full job post, links, notes, files), 3 your CV; then press **Prepare my interview brief**. Links are read by the server ([webpage.py](app/rag/webpage.py), `POST /documents/from-url`): it downloads the page, keeps its readable text (no menus or scripts, at most 30,000 characters) and stores it like any other document. Pages that need JavaScript or a login (often LinkedIn) can't be read: the page then asks you to paste the text. Step 3 shows the CV already stored, with a **Delete** button; adding a new one with "Replace my stored CV" ticked deletes the old one after the new one is saved, so only one CV feeds your briefs. Or, in a terminal (any of the paths can be a PDF, Word, .eml or text file):
+On the web page (http://localhost:8000), go through the three steps from left to right, one at a time (**Next** / **Back**, a swipe, or a click on the step bar): 1 the interview, 2 the company and the job (a link to the job post or its full text on the left; company pages, notes and files on the right), 3 your CV; then press **Prepare my interview brief**. Links are read by the server ([webpage.py](app/rag/webpage.py), `POST /documents/from-url`): it downloads the page, keeps its readable text (no menus or scripts, at most 30,000 characters) and stores it like any other document. Pages that need JavaScript or a login (often LinkedIn) can't be read: the page then asks you to paste the text. Step 3 shows the CV already stored, with a **Delete** button; adding a new one with "Replace my stored CV" ticked deletes the old one after the new one is saved, so only one CV feeds your briefs. Or, in a terminal (any of the paths can be a PDF, Word, .eml or text file):
 
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
@@ -252,7 +252,11 @@ flowchart LR
 
 The code enforces the follow-up limit, not Claude, so it holds even if Claude keeps asking for more.
 
+**Time:** the setup form has a **Duration** (30, 45, 60 or 90 minutes, sent as `duration_min` when the session starts). `plan_questions` records `interview_started_at`, and the session view returns both, so the page shows a countdown in the side panel (coral in the last 5 minutes, "Time's up" at 0, which also highlights **End interview and get feedback**). The interview is never ended automatically, so an answer in progress is not cut. While you record, the page shows an answer timer (`1:23 / 5:00`, the 5-minute limit per answer) and a "You ..." bubble; while the next question is prepared, an "Interviewer ..." bubble.
+
 ### Step 6: the final feedback
+
+**Going back:** under the controls, **‹ The brief** stops this interview and starts a new session at the brief review with the same brief (`review_brief: true` when the session starts; `route_start` then goes to `review_brief`, and the brief is only rewritten if you ask for changes). **‹ The setup** opens the 3-step form filled in with this interview; if nothing changes, its last button reads **Back to my interview** and returns where you left off. Either way, the interview you leave stays saved.
 
 **Ending early:** the **End interview and get feedback** button (under the answer controls) (or typing `/end` in the CLI) calls `POST /sessions/{id}/end`, which resumes the paused `answer` step with `{"end": true}` instead of an answer. The step drops the unanswered question, sets `ended_early`, and `route_after_answer` goes straight to `final_feedback`, whose prompt is told to judge only the questions you answered. It needs at least one answer; to leave without feedback, use **New interview** (top right): the session stays saved.
 
@@ -298,9 +302,10 @@ In [sessions.py](app/api/sessions.py), `_voice_turn` runs these three steps and 
 
 ```mermaid
 flowchart TD
-  START((start)) --> rs{brief already approved?}
+  START((start)) --> rs{a brief already?}
   rs -- no --> prepare_brief
-  rs -- yes --> plan_questions
+  rs -- "yes, to review again" --> review_brief
+  rs -- yes, approved --> plan_questions
   prepare_brief --> review_brief["review_brief (pause)"]
   review_brief -- approved or edited --> plan_questions
   review_brief -- changes requested --> prepare_brief
@@ -437,6 +442,17 @@ They don't check how good Claude's answers are. That's the job of the evals in P
 
 ---
 
+## 12b. Evaluations
+
+Tests check that the code works; evaluations measure how *good* Claude's decisions are, on fixed cases, so a prompt change can be judged with numbers instead of impressions.
+
+The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answer` step), in [evals/answer_scoring/](evals/answer_scoring/):
+
+- **Cases:** [cases.yaml](evals/answer_scoring/cases.yaml) holds 30 fictional answers (strong, adequate, generic, missing the result, "we" instead of "I", off-topic, no answer, cut off, completed by a follow-up, follow-up limit reached), each labelled with the score range and follow-up decision a fair interviewer would give, and why. Six more come from your real sessions and stay in `evals/private/` (git-ignored).
+- **Runner:** [run.py](evals/answer_scoring/run.py) calls the real node on each case, records the model, tokens and time of each Claude call (`app.llm.record_calls()`), and grades by code: `score_in_range`, `off_by`, `follow_up_ok`, plus follow-up precision / recall / specificity for the whole run. A case that fails (Claude error, timeout) is counted as `invalid`, never as a wrong score.
+- **Where to look:** each run is a LangSmith experiment on the dataset `interview-answer-scoring-<hash>` (the hash changes when the cases change), with every case's trace; select two experiments to compare them side by side. A local summary is saved in `evals/answer_scoring/runs/` and compared with the previous run.
+- **Run it:** `./scripts/eval.ps1` (36 cases × 2 repetitions, about 2 minutes and $0.04).
+
 ## 13. Running it day to day
 
 | I want to... | Command |
@@ -546,6 +562,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 2. Voice: speech-to-text, text-to-speech, one-page web UI, English / French / Spanish | built and tested with fake providers; the spoken check (under ~3 s per turn) needs the Deepgram and ElevenLabs keys |
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
+| 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

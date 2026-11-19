@@ -11,8 +11,12 @@ Both send the system prompt with cache_control: a long system prompt repeated on
 (low / medium / high) trades thinking depth for speed. Both raise LLMError when Claude refuses,
 runs out of tokens or returns nothing usable; the API turns that into an error you can retry.
 fallback=True (Sonnet only) lets the API retry on a backup model if Sonnet declines a request.
+record_calls() lets an evaluation capture each call's model, token usage and time.
 """
 
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import TypeVar
 
@@ -34,6 +38,40 @@ class LLMError(RuntimeError):
 def get_claude() -> anthropic.Anthropic:
     # Reads ANTHROPIC_API_KEY; tracing is on when LANGSMITH_TRACING=true.
     return wrap_anthropic(anthropic.Anthropic())
+
+
+# ---------- call recording (used by the evaluations, off in the app) ----------
+# Inside `with record_calls() as calls:`, every Claude call appends {model, stop_reason, usage,
+# latency_s} to `calls`, so an evaluation can report cost and time per case. A ContextVar is a
+# variable private to the current thread / task, so parallel evaluation cases don't mix calls.
+_recorded: ContextVar[list | None] = ContextVar("llm_recorded_calls", default=None)
+
+
+@contextmanager
+def record_calls():
+    calls: list[dict] = []
+    token = _recorded.set(calls)
+    try:
+        yield calls
+    finally:
+        _recorded.reset(token)
+
+
+def _record(response, started: float) -> None:
+    calls = _recorded.get()
+    if calls is not None:
+        usage = response.usage
+        calls.append({
+            "model": response.model,
+            "stop_reason": response.stop_reason,
+            "latency_s": round(time.perf_counter() - started, 3),
+            "usage": {
+                "input_tokens": usage.input_tokens or 0,
+                "output_tokens": usage.output_tokens or 0,
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+            },
+        })
 
 
 def _system(text: str) -> list[dict]:
@@ -70,7 +108,9 @@ def structured(
     if fallback:
         kwargs.update(betas=[FALLBACK_BETA], fallbacks="default")
 
+    started = time.perf_counter()
     response = get_claude().beta.messages.parse(**kwargs)
+    _record(response, started)
     _check(response, model)
     if response.parsed_output is None:
         raise LLMError(f"{model} returned no parsable {schema.__name__}")
@@ -79,6 +119,7 @@ def structured(
 
 def text_reply(*, model: str, system: str, user: str, max_tokens: int, effort: str) -> str:
     """One call that returns plain text (thinking blocks are skipped)."""
+    started = time.perf_counter()
     response = get_claude().messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -86,6 +127,7 @@ def text_reply(*, model: str, system: str, user: str, max_tokens: int, effort: s
         messages=[{"role": "user", "content": user}],
         output_config={"effort": effort},
     )
+    _record(response, started)
     _check(response, model)
     text = "".join(b.text for b in response.content if b.type == "text").strip()
     if not text:

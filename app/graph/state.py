@@ -36,6 +36,7 @@ class InterviewState(TypedDict, total=False):
     role: str
     documents: list[DocumentInput]
     num_questions: int
+    duration_min: int | None  # interview length chosen at setup (shown as a countdown on the page)
 
     # Brief, and my review of it
     brief: dict | None
@@ -43,6 +44,7 @@ class InterviewState(TypedDict, total=False):
     brief_approved: bool
 
     # Interview loop
+    interview_started_at: str  # ISO time the questions were planned: the countdown starts here
     questions: list[dict]  # PlannedQuestion dicts
     q_index: int  # current main question
     followups: int  # follow-ups asked on the current question

@@ -1,45 +1,75 @@
 /*
 style.css - the look of the web page (web/index.html).
 
-- Colors are defined once as variables on :root and redefined for dark mode. The page follows
-  the system's light or dark setting until you pick one with the theme button (top right),
-  which sets data-theme="light" or "dark" on <html>.
-- Text size scales gently with the window (17-19px); the page uses the whole window width.
-- Buttons are rounded "pills"; main actions use a soft gradient and lift on hover.
-- Buttons have one color per kind of action: blue-violet = the main next step (btn-primary),
-  red = recording (talk), green = finish and get feedback (btn-success), grey outline =
-  secondary actions (btn-ghost).
-- Scores are colored the same everywhere: 1-2 red (low), 3 amber (mid), 4-5 green (high).
+- The palette has 7 colors (also listed in CLAUDE.md). Every color on the page is one of them
+  or a tint of one of them; the page background and the title are solid, only buttons use a
+  subtle gradient:
+    Midnight #1E2350 (neutral dark: text)        Cloud #F5F6FB (neutral light: background)
+    Indigo   #4F46E5 (main color: actions, focus, current step)
+    Coral    #FF6B5B (recording, gaps, low scores)
+    Teal     #14B8A6 (finish / success, strengths, good scores)
+    Sun      #F5A524 (second accent: the second card of each setup step)
+    Sky      #0EA5E9 (third accent: the first card of each setup step)
+  They are defined once as variables on :root and redefined for dark mode. The page follows the
+  system's light or dark setting until you pick one with the theme button (top right), which
+  sets data-theme="light" or "dark" on <html>.
+- Two fonts: Sora (headings, buttons, step numbers, scores) and DM Sans (body text, labels,
+  fields), loaded from Google Fonts in index.html; the system font is the fallback.
+- Text size scales gently with the window (17.5-20px); the page uses the whole window width.
+- Buttons are rounded "pills": indigo gradient = the main next step (btn-primary), coral =
+  recording (talk), teal gradient = finish and get feedback (btn-success), white with an
+  indigo outline on hover = secondary actions (btn-ghost).
+- Scores are colored the same everywhere: 1-2 coral (low), 3 indigo (mid), 4-5 teal (high).
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
   interview (conversation | controls) and the feedback (overview | details) use two columns.
   On a phone everything stacks in one column.
 */
 
 :root {
-  --bg: #f4f5f7;
+  /* the palette */
+  --midnight: #1e2350;
+  --cloud: #f5f6fb;
+  --indigo: #4f46e5;
+  --coral: #ff6b5b;
+  --teal: #14b8a6;
+  /* the two fonts (loaded in index.html), with the system font as a fallback when offline */
+  --font-heading: "Sora", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sky: #0ea5e9;                   /* 7th color: the first card of each step */
+  --sky-soft: #f4fafe;              /* Sky tint, very light: background of the first cards */
+  --sky-line: #d9edf9;              /* Sky, light: border of the first cards */
+  --sun: #f5a524;                   /* 6th color: the second card of each step, highlights */
+  --sun-soft: #fffaef;              /* Sun tint, very light: background of the second cards */
+  --sun-line: #f6e6c2;              /* Sun, light: border of the second cards */
+
+  /* what each part of the page uses (light mode) */
+  --bg: var(--cloud);
   --card: #ffffff;
-  --text: #1c1d21;
-  --muted: #646873;
-  --border: #e0e2e8;
-  --primary: #2f5bd3;
-  --primary-hover: #2449b0;
-  --primary-soft: #e8eefc;
-  --record: #d23c3c;
-  --record-soft: #fdeceb;
-  --success: #1d8a4e;
-  --success-hover: #17703f;
-  --warn: #b7700b;
-  --warn-soft: #fdf3e2;
-  --low: #d23c3c;
-  --mid: #c98a12;
-  --high: #1d8a4e;
-  --you: #eef3ff;
-  --error-bg: #fdecec;
-  --error-text: #a12626;
+  --text: var(--midnight);
+  --muted: #5d6290;                 /* Midnight, lighter */
+  --border: #dfe1f4;                /* Indigo tint */
+  --field: #ffffff;                 /* form fields: white, never grey */
+  --primary: var(--indigo);
+  --primary-2: #7c6cf2;             /* lighter indigo: end of the button gradient */
+  --primary-hover: #4338ca;
+  --primary-soft: #eeedfd;          /* Indigo tint: highlighted cards, current step */
+  --record: var(--coral);
+  --record-soft: #ffedea;           /* Coral tint */
+  --success: var(--teal);
+  --success-2: #0e9f8e;             /* deeper teal: end of the button gradient */
+  --success-hover: #0e9f8e;
+  --warn: #e0533f;                  /* Coral, deeper, for text on light tints */
+  --warn-soft: #fff1ee;
+  --low: #e0533f;
+  --mid: var(--indigo);
+  --high: #0e9f8e;
+  --you: #eeedfd;
+  --error-bg: #ffedea;
+  --error-text: #b4382a;
   --on-color: #ffffff;
-  --primary-2: #6a4cf0;   /* second color of the blue -> violet button gradient */
-  --success-2: #13896b;   /* second color of the green button gradient */
-  --page-glow: #e3e9fb;   /* soft color at the top of the page background */
+  --page-glow: #dcd9fb;             /* Indigo glow at the top left of the page */
+  --page-glow-2: #cff1ec;           /* Teal glow at the top right */
+  --page-bg: #e6e4fc;               /* page background: one solid, colorful indigo tint */
   color-scheme: light; /* form controls (file pickers, selects) drawn in light colors */
 }
 
@@ -47,74 +77,94 @@ style.css - the look of the web page (web/index.html).
    theme button, or when you picked "dark" (app.js sets data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #131416;
-    --card: #1d1e22;
-    --text: #ececea;
-    --muted: #a3a6ad;
-    --border: #33353b;
-    --primary: #6f93ff;
-    --primary-hover: #8aa7ff;
-    --primary-soft: #1f2a46;
-    --record: #ec6a6a;
-    --record-soft: #3a2020;
-    --success: #3bb873;
-    --success-hover: #52c886;
-    --warn: #e7a43b;
-    --warn-soft: #3a2e1a;
-    --low: #ec6a6a;
-    --mid: #e7a43b;
-    --high: #3bb873;
-    --you: #22304f;
-    --error-bg: #3a1d1d;
-    --error-text: #ffb3b3;
-    --on-color: #0f1115;
-    --primary-2: #9a7bff;
-    --success-2: #2fae8c;
-    --page-glow: #1c2440;
+    --bg: #12152e;
+    --card: #1b1f3d;
+    --text: var(--cloud);
+    --muted: #a5a9cc;
+    --border: #2e3361;
+    --field: #161a36;
+    --primary: #8b85ff;
+    --primary-2: #a99bff;
+    --primary-hover: #a39eff;
+    --primary-soft: #262a5c;
+    --record: #ff8a7d;
+    --record-soft: #3a2230;
+    --success: #2dd4bf;
+    --success-2: #14b8a6;
+    --success-hover: #5eead4;
+    --warn: #ff8a7d;
+    --warn-soft: #36223a;
+    --low: #ff8a7d;
+    --mid: #8b85ff;
+    --high: #2dd4bf;
+    --you: #262a5c;
+    --error-bg: #3a2230;
+    --error-text: #ffb4aa;
+    --on-color: #12152e;
+    --page-glow: #23285e;
+    --page-glow-2: #12363c;
+    --page-bg: #181c40;
+    --sun-soft: #25233a;
+    --sun-line: #4a4232;
+    --sky-soft: #1a2545;
+    --sky-line: #2b4166;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #131416;
-  --card: #1d1e22;
-  --text: #ececea;
-  --muted: #a3a6ad;
-  --border: #33353b;
-  --primary: #6f93ff;
-  --primary-hover: #8aa7ff;
-  --primary-soft: #1f2a46;
-  --record: #ec6a6a;
-  --record-soft: #3a2020;
-  --success: #3bb873;
-  --success-hover: #52c886;
-  --warn: #e7a43b;
-  --warn-soft: #3a2e1a;
-  --low: #ec6a6a;
-  --mid: #e7a43b;
-  --high: #3bb873;
-  --you: #22304f;
-  --error-bg: #3a1d1d;
-  --error-text: #ffb3b3;
-  --on-color: #0f1115;
-  --primary-2: #9a7bff;
-  --success-2: #2fae8c;
-  --page-glow: #1c2440;
+  --bg: #12152e;
+  --card: #1b1f3d;
+  --text: var(--cloud);
+  --muted: #a5a9cc;
+  --border: #2e3361;
+  --field: #161a36;
+  --primary: #8b85ff;
+  --primary-2: #a99bff;
+  --primary-hover: #a39eff;
+  --primary-soft: #262a5c;
+  --record: #ff8a7d;
+  --record-soft: #3a2230;
+  --success: #2dd4bf;
+  --success-2: #14b8a6;
+  --success-hover: #5eead4;
+  --warn: #ff8a7d;
+  --warn-soft: #36223a;
+  --low: #ff8a7d;
+  --mid: #8b85ff;
+  --high: #2dd4bf;
+  --you: #262a5c;
+  --error-bg: #3a2230;
+  --error-text: #ffb4aa;
+  --on-color: #12152e;
+  --page-glow: #23285e;
+  --page-glow-2: #12363c;
+  --page-bg: #181c40;
+  --sun-soft: #25233a;
+  --sun-line: #4a4232;
+  --sky-soft: #1a2545;
+  --sky-line: #2b4166;
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 
 /* Text size: 17px on a laptop, growing to 19px on large screens. */
-html { font-size: clamp(17px, 0.45vw + 11px, 19px); }
+html { font-size: clamp(17.5px, 0.5vw + 11.5px, 20px); }
 
 body {
   margin: 0;
   min-height: 100vh;
-  /* a soft color glow at the top of the page, fading into the background color */
-  background: radial-gradient(1200px 500px at 50% -120px, var(--page-glow), transparent 70%), var(--bg);
+  background: var(--page-bg); /* one solid color: a colorful light indigo (no gradient) */
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-body);
   line-height: 1.55;
+}
+
+/* Headings, buttons, step numbers and scores use the display font; everything else the body font. */
+h1, h2, h3, .btn, .step-no, .slide-no, .wizard-steps li, .score-big, .num, .crit-name,
+.q-divider, .label-like, .form-card h3, .talk {
+  font-family: var(--font-heading);
+  letter-spacing: -0.01em;
 }
 
 /* ---------- page frame: the whole window width, with side margins ---------- */
@@ -124,7 +174,7 @@ body {
 .top-right { display: flex; align-items: center; gap: 12px; }
 main { padding-top: 16px; padding-bottom: 40px; }
 
-h1 { font-size: 1.45rem; margin: 0; }
+h1 { font-size: 1.5rem; margin: 0; color: var(--primary); }
 h2 { font-size: 1.15rem; margin: 0 0 12px; }
 h3 { font-size: 1rem; margin: 0 0 8px; }
 
@@ -138,12 +188,45 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .panel-head h2 { margin: 0; }
 .muted { color: var(--muted); font-weight: 400; }
-.small { font-size: 0.85rem; }
+.small { font-size: 0.9rem; }
+/* a short explanation under a field's name */
+.hint { display: block; margin-top: 2px; color: var(--muted); font-weight: 400; font-size: 0.9rem; }
+.label-like { display: block; margin-bottom: 6px; font-weight: 650; font-size: 1.05rem; }
+
+/* Every setup step: two cards side by side (stacked on a phone). The first uses the Sky tint, the
+   second the Sun tint, so the two halves of a step are easy to tell apart from the indigo page. */
+.card-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 900px) { .card-grid { grid-template-columns: 1fr 1fr; } }
+/* first card of a step: Sky tint; the second (.card-sun) overrides it with the Sun tint */
+.form-card {
+  border: 1px solid var(--sky-line);
+  border-top: 3px solid color-mix(in srgb, var(--sky) 70%, var(--card)); /* a thin, softened stripe */
+  border-radius: 16px; padding: 18px 20px; background: var(--sky-soft);
+}
+.form-card h3 { margin: 0; font-size: 1.15rem; }
+.form-card > .hint { margin: 2px 0 14px; }
+.form-card label:last-child { margin-bottom: 0; }
+.card-sun { background: var(--sun-soft); border-color: var(--sun-line); border-top: 3px solid color-mix(in srgb, var(--sun) 70%, var(--card)); }
+.card-sun textarea { margin-top: 0; }
+.card-sun .check { margin: 12px 0 0; }
+.form-card.fill { display: flex; flex-direction: column; }
+.form-card.fill textarea { flex: 1; min-height: 12em; }
+.my-cv .empty { padding: 14px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); text-align: center; }
+/* "or" between uploading and pasting: a line with the word in the middle */
+.or { display: flex; align-items: center; gap: 12px; margin: 12px 0; color: var(--muted); font-size: 0.9rem; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+
+/* two columns on a wide screen, one on a phone */
+.grid-2 { display: grid; grid-template-columns: 1fr; gap: 0 28px; }
+@media (min-width: 900px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+/* a field that stretches to the height of its column (the job post next to the other fields) */
+.fill { display: flex; flex-direction: column; }
+.fill textarea { flex: 1; min-height: 12em; }
 .center { display: flex; justify-content: center; margin-top: 20px; }
 
 /* ---------- forms ---------- */
 
-label { display: block; margin: 0 0 18px; font-weight: 650; font-size: 1.05rem; }
+label { display: block; margin: 0 0 14px; font-weight: 650; font-size: 1.05rem; }
 input, select, textarea {
   display: block;
   width: 100%;
@@ -151,18 +234,32 @@ input, select, textarea {
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--bg);
+  background: var(--field);
   color: var(--text);
   font: inherit;
   font-size: 1.08rem;
   font-weight: 400;
   transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
+select {
+  appearance: none; -webkit-appearance: none;
+  padding-right: 56px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='14' fill='%235b54e8'/%3E%3Cpath d='M9 12l5 5 5-5' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 28px 28px;
+}
 input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
-input[type="file"] { padding: 6px; }
+input[type="file"] { padding: 8px; border-style: dashed; cursor: pointer; color: var(--muted); }
+input[type="file"]::file-selector-button {
+  margin-right: 14px; padding: 8px 18px;
+  border: 0; border-radius: 999px;
+  background: var(--primary-soft); color: var(--primary);
+  font: inherit; font-weight: 650; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+input[type="file"]::file-selector-button:hover { background: var(--primary); color: #fff; }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus {
-  outline: none; border-color: var(--primary); background: var(--card);
+  outline: none; border-color: var(--primary); background-color: var(--card); /* -color only: keeps the select arrow */
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
@@ -225,28 +322,44 @@ input:focus, select:focus, textarea:focus {
 
 /* The setup is a 3-step form: the steps sit side by side in a track that shows one at a time.
    Next / Back (or a swipe, or a click on the step bar) scrolls it to the next step. */
-.wizard { display: flex; flex-direction: column; gap: 18px; }
+.wizard { display: flex; flex-direction: column; gap: 14px; }
 .wizard-steps { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 0; padding: 0; }
+.wizard-steps { gap: 12px; }
 .wizard-steps li {
-  flex: none; display: flex; align-items: center; gap: 8px;
-  padding: 6px 16px 6px 8px; border-radius: 999px; border: 1px solid var(--border);
-  color: var(--muted); font-weight: 600; font-size: 0.92rem; cursor: pointer;
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 9px 22px 9px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted); font-weight: 600; font-size: 1.08rem; cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.wizard-steps li .step-no { background: var(--border); color: var(--text); }
+.wizard-steps li .step-no { width: 32px; height: 32px; margin: 0; font-size: 0.95rem; background: var(--border); color: var(--text); }
 .wizard-steps li:hover { border-color: var(--primary); color: var(--text); }
 .wizard-steps li.active { border-color: var(--primary); background: var(--primary-soft); color: var(--text); }
 .wizard-steps li.active .step-no, .wizard-steps li.done .step-no { background: var(--primary); color: var(--on-color); }
+/* The track is a window that clips; the rail inside it holds the three steps side by side and
+   slides (transform) so exactly one step shows. Steps off screen are made `inert` by app.js, so
+   Tab or a click can never pull a half-hidden field into view and shift the steps. */
 .wizard-track {
-  display: flex; align-items: flex-start; overflow-x: auto; scroll-snap-type: x mandatory; scroll-behavior: smooth;
-  scrollbar-width: none;
+  overflow: hidden;
   transition: height 0.25s ease; /* app.js sets the height to the current step's */
 }
-.wizard-track::-webkit-scrollbar { display: none; }
-.wizard-track > .step { flex: 0 0 100%; scroll-snap-align: start; padding: 4px 6px 2px; }
-.wizard-track .step h2 { font-size: 1.5rem; margin-bottom: 18px; }
-.wizard-track textarea { min-height: 7em; }
-.wizard-nav { display: flex; align-items: center; gap: 16px; padding-top: 18px; border-top: 1px solid var(--border); }
+.wizard-rail { display: flex; align-items: flex-start; transition: transform 0.35s ease; }
+.wizard-rail > .step { flex: 0 0 100%; min-width: 0; padding: 4px 6px 2px; }
+/* Step titles ("The interview", "The company and the job", "Your CV"): large, with a bigger badge */
+.wizard-track .step h2 { display: flex; align-items: center; gap: 10px; font-size: 1.35rem; margin: 2px 0 14px; }
+.wizard-track .step h2 .step-no { width: 30px; height: 30px; margin: 0; font-size: 0.95rem; }
+
+/* Back / Next bar: "sticky" pins it to the bottom of the window whenever the form is taller than
+   the screen, so the buttons are always visible without scrolling. On a large screen it simply
+   sits under the form. The negative margins let its white background cover the form's edges. */
+.wizard-nav {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; align-items: center; gap: 16px;
+  margin: 0 -28px -24px; padding: 14px 28px 16px;
+  background: var(--card); border-top: 1px solid var(--border);
+  border-radius: 0 0 18px 18px;
+  box-shadow: 0 -8px 18px -12px color-mix(in srgb, var(--midnight) 35%, transparent);
+}
 .wizard-nav p { flex: 1; margin: 0; text-align: center; font-size: 1rem; }
 .wizard-nav .btn { min-width: 190px; padding: 14px 30px; font-size: 1.12rem; }
 .resume.panel { margin-top: 16px; padding: 14px 20px; }
@@ -260,16 +373,18 @@ input:focus, select:focus, textarea:focus {
 .existing-docs .stored {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 12px; margin-bottom: 6px;
-  border: 1px solid var(--border); border-radius: 9px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 9px; background: var(--primary-soft);
 }
 @media (max-width: 640px) {
   .wizard-steps li { font-size: 0.8rem; padding: 8px; }
-  .wizard-nav .btn { min-width: 0; }
+  .wizard-nav .btn { min-width: 0; padding: 12px 18px; font-size: 1rem; }
+  .wizard-nav p { display: none; } /* the hint needs room the phone does not have */
+  .wizard-track .step h2 { font-size: 1.25rem; }
 }
 .step-no {
   display: inline-grid; place-items: center;
   width: 26px; height: 26px; margin-right: 6px;
-  border-radius: 50%; background: var(--primary); color: var(--on-color);
+  border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff;
   font-size: 0.85rem;
 }
 .submit-step { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
@@ -280,7 +395,7 @@ input:focus, select:focus, textarea:focus {
 .my-cv .stored {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 12px; margin-bottom: 6px;
-  border: 1px solid var(--border); border-radius: 9px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 9px; background: var(--primary-soft);
 }
 .resume summary { cursor: pointer; color: var(--muted); }
 
@@ -295,10 +410,39 @@ input:focus, select:focus, textarea:focus {
 .card.accent { border-left-color: var(--primary); background: var(--primary-soft); }
 .card.warn { border-left-color: var(--warn); background: var(--warn-soft); }
 details.card summary { cursor: pointer; font-weight: 600; }
-.ask-changes { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; }
-.ask-changes summary { cursor: pointer; font-weight: 600; }
-.ask-changes[open] summary { margin-bottom: 10px; }
-.ask-changes textarea { margin-bottom: 10px; }
+/* "Something to change?": always open, in a coral tint so it is easy to spot */
+.ask-changes {
+  margin-top: 18px; padding: 16px 20px; border-radius: 14px;
+  background: var(--record-soft); border: 1px solid color-mix(in srgb, var(--coral) 45%, transparent);
+  border-left: 6px solid var(--coral);
+}
+.ask-changes h3 { margin: 0; font-size: 1.1rem; color: var(--warn); }
+.ask-changes .hint { margin: 2px 0 10px; }
+.ask-changes textarea { margin: 0 0 10px; background: var(--field); }
+
+/* Approve: locked (soft and not clickable) until the last card has been seen, then teal */
+.btn-locked { background: var(--primary-soft); color: var(--muted); cursor: not-allowed; box-shadow: none; }
+.btn-locked:hover { transform: none !important; }
+.btn-ready { background: var(--success); color: #fff; box-shadow: 0 4px 14px color-mix(in srgb, var(--success) 40%, transparent); }
+.btn-ready:hover:not(:disabled) { background: var(--success-hover); }
+.approve-hint { margin: 6px 0 0; text-align: center; color: var(--muted); font-size: 0.92rem; }
+.btn-coral { background: var(--coral); color: #fff; }
+.btn-coral:hover:not(:disabled) { filter: brightness(1.05); }
+
+/* Light / dark switch: a pill with a sun and a moon, and a knob that slides between them */
+.theme-switch {
+  position: relative; display: inline-flex; align-items: center; justify-content: space-between;
+  width: 68px; height: 34px; padding: 0 8px; border-radius: 999px; cursor: pointer;
+  background: var(--primary-soft); border: 1px solid var(--border);
+}
+.theme-switch .icon { width: 18px; height: 18px; z-index: 1; display: grid; place-items: center; }
+.theme-switch svg { width: 18px; height: 18px; fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; }
+.theme-switch .moon svg { fill: var(--primary); stroke: none; }
+.theme-switch .knob {
+  position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--card); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25); transition: transform 0.25s ease;
+}
+.theme-switch[aria-checked="true"] .knob { transform: translateX(34px); }
 
 /* ---------- carousel: cards scrolled (or swiped) from left to right ---------- */
 
@@ -363,12 +507,14 @@ details.card summary { cursor: pointer; font-weight: 600; }
 .slide.warn .slide-no { background: var(--warn); color: var(--on-color); }
 .slide.good { border-top-color: var(--high); background: color-mix(in srgb, var(--high) 12%, var(--card)); }
 .slide.good .slide-no { background: var(--high); color: var(--on-color); }
-.arrow {
-  flex: none; width: 52px; height: 52px; padding: 0 0 4px;
-  font-size: 2rem; line-height: 1; border-radius: 50%;
-  background: var(--card); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+.carousel .arrow {
+  flex: none; width: 54px; height: 54px; padding: 0 0 4px;
+  font-size: 2.1rem; font-weight: 700; line-height: 1; border-radius: 50%;
+  background: var(--primary); color: #fff; border: 0;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--primary) 40%, transparent);
 }
-.arrow:disabled { visibility: hidden; } /* no arrow before the first card or after the last */
+.carousel .arrow:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+.carousel .arrow.off { visibility: hidden; } /* no arrow before the first card or after the last */
 .overview .arrow { width: 40px; height: 40px; font-size: 1.5rem; }
 .carousel-dots { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
 .btn-wide { min-width: 320px; padding: 12px 24px; font-size: 1.05rem; margin-top: 16px; }
@@ -421,6 +567,36 @@ details.card summary { cursor: pointer; font-weight: 600; }
 .end-row .btn { width: 100%; }
 #timings { margin: 0; text-align: center; }
 kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 0.85em; }
+
+/* "..." while you speak or the interviewer prepares the next question */
+.line.pending { opacity: 0.85; }
+.dots { display: inline-flex; gap: 5px; padding: 6px 2px 2px; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); animation: dot 1.2s infinite ease-in-out; }
+.line.candidate .dots i { background: var(--record); }
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dot { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
+
+/* answer timer under the record button: "1:23 / 5:00", coral in the last 30 seconds */
+.rec-timer { font-family: var(--font-heading); font-size: 1.05rem; font-weight: 600; color: var(--record); font-variant-numeric: tabular-nums; }
+.rec-timer[hidden] { display: none; }
+.rec-timer.late { animation: pulse-text 1s infinite; }
+@keyframes pulse-text { 50% { opacity: 0.45; } }
+
+/* interview countdown in the side panel */
+.clock { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; background: var(--primary-soft); }
+.clock[hidden] { display: none; }
+.clock-row { display: flex; align-items: baseline; justify-content: space-between; }
+.clock-label { color: var(--muted); font-size: 0.92rem; }
+.clock strong { font-family: var(--font-heading); font-size: 1.35rem; font-variant-numeric: tabular-nums; color: var(--primary); }
+#clock-fill { height: 100%; width: 100%; background: var(--primary); transition: width 1s linear; }
+.clock.low { background: var(--record-soft); }
+.clock.low strong { color: var(--record); }
+.clock.low #clock-fill { background: var(--record); }
+.clock-note { margin: 2px 0 0; font-size: 0.92rem; color: var(--warn); }
+.clock-note[hidden] { display: none; }
+#end-interview.urgent { animation: pulse 1.2s ease-in-out infinite; }
+.go-back { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 
 /* ---------- feedback ---------- */
 

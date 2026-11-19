@@ -1,0 +1,36 @@
+{
+  "company": "Northwind Logistics",
+  "role": "Senior Backend Engineer",
+  "brief": {
+    "company_summary": "Northwind Logistics runs route planning and real-time tracking for 400 regional delivery companies in France and Spain, handling 2 million parcel events a day. It just raised a Series B to expand into Portugal and Italy, so volume is expected to triple over 18 months.",
+    "role_requirements": [
+      "5+ years of production backend work, Python preferred",
+      "Solid PostgreSQL: schema design, indexing, query tuning",
+      "Message queues and event-driven systems experience",
+      "Owned incidents end to end and wrote postmortems",
+      "Mentoring, on-call (one week in six), clear English"
+    ],
+    "interview_format": "60-minute behavioral and experience interview with Julien Roux, the Engineering Manager of the Tracking team (step 2 of 4). Inference: expect past-situation questions on ownership, incidents, mentoring and teamwork.",
+    "interviewers": [
+      {"name": "Julien Roux", "role": "Engineering Manager, Tracking", "notes": "Runs the 60-minute behavioral and experience interview"},
+      {"name": "Camille Martin", "role": "Talent Acquisition", "notes": "Runs the 30-minute first call"}
+    ],
+    "cv_gaps": [
+      "The CV shows no mentoring or leadership of other engineers, which the role requires.",
+      "AWS experience is limited to EC2 and S3, with no ECS, RDS or SQS listed.",
+      "No evidence of owning a formal SLO like the 99.9% target."
+    ],
+    "focus_areas": [
+      "Prepare a STAR story on the 3-hour migration outage: your actions, the postmortem and what changed afterwards.",
+      "Prepare a story showing influence or mentoring, such as introducing tests and CI at AgriData.",
+      "Prepare a motivation answer linking your RabbitMQ and PostgreSQL results to Northwind's scaling challenges."
+    ],
+    "probable_questions": [
+      "Tell me about a production incident you led, and what you changed afterwards.",
+      "Describe a time you improved performance or reliability, and how you measured the result.",
+      "Tell me about a time you helped a less experienced colleague grow.",
+      "Describe a disagreement with a teammate or product owner and how you resolved it.",
+      "Why Northwind Logistics, and why this role now?"
+    ]
+  }
+}

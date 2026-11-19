@@ -26,7 +26,7 @@ def build_graph() -> StateGraph:
     g.add_node("evaluate_answer", nodes.evaluate_answer)
     g.add_node("final_feedback", nodes.final_feedback)
 
-    g.add_conditional_edges(START, nodes.route_start, ["prepare_brief", "plan_questions"])
+    g.add_conditional_edges(START, nodes.route_start, ["prepare_brief", "review_brief", "plan_questions"])
     g.add_edge("prepare_brief", "review_brief")
     g.add_conditional_edges("review_brief", nodes.route_after_review, ["plan_questions", "prepare_brief"])
     g.add_edge("plan_questions", "ask")

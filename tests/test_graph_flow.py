@@ -144,3 +144,39 @@ def test_end_endpoint(fake):
         client.post(f"/sessions/{sid}/resume", json={"value": "good"})
         view = client.post(f"/sessions/{sid}/end").json()
         assert view["status"] == "done" and view["ended_early"] is True
+
+
+def test_duration_and_start_time_reach_the_view(fake):
+    """The countdown needs the chosen duration and the moment the questions were planned."""
+    from app.main import app
+
+    with TestClient(app) as client:
+        iv = client.post("/interviews", json={"company": f"Fake {uuid.uuid4().hex[:6]}", "role": "Eng"}).json()
+        client.post("/documents", json={"interview_id": iv["id"], "doc_type": "job_post", "text": "Python"})
+        view = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 2, "duration_min": 45}).json()
+        assert view["duration_min"] == 45 and view["interview_started_at"] is None  # still at the brief
+        view = client.post(f"/sessions/{view['session_id']}/resume", json={"value": {"action": "approve"}}).json()
+        assert view["duration_min"] == 45 and view["interview_started_at"]  # countdown can start
+        assert client.post(f"/interviews/{iv['id']}/sessions", json={"duration_min": 5}).status_code == 422
+
+
+def test_back_to_the_brief_from_an_interview(fake):
+    """A new session with review_brief starts at the review of the same brief, without rewriting it."""
+    from app.main import app
+
+    with TestClient(app) as client:
+        iv = client.post("/interviews", json={"company": f"Fake {uuid.uuid4().hex[:6]}", "role": "Eng"}).json()
+        client.post("/documents", json={"interview_id": iv["id"], "doc_type": "job_post", "text": "Python"})
+        first = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 2}).json()
+        client.post(f"/sessions/{first['session_id']}/resume", json={"value": {"action": "approve"}})
+        client.post(f"/sessions/{first['session_id']}/resume", json={"value": "good"})  # mid-interview
+        briefs_written = fake.calls.count("InterviewBrief")
+
+        again = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 2, "review_brief": True}).json()
+        assert again["pending"]["type"] == "review_brief"
+        assert again["pending"]["brief"] == BRIEF.model_dump()
+        assert fake.calls.count("InterviewBrief") == briefs_written  # not written again
+        view = client.post(f"/sessions/{again['session_id']}/resume", json={"value": {"action": "approve"}}).json()
+        assert view["pending"]["type"] == "answer" and view["pending"]["q_index"] == 0  # fresh questions
+        # the first session is untouched and can still be continued
+        assert client.get(f"/sessions/{first['session_id']}").json()["pending"]["q_index"] == 1

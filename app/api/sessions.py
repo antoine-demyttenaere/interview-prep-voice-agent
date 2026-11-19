@@ -51,6 +51,8 @@ AUDIO_DIR = Path(__file__).resolve().parents[2] / "evals" / "audio"
 
 class SessionIn(BaseModel):
     num_questions: int | None = Field(None, ge=1, le=15)
+    duration_min: int | None = Field(None, ge=10, le=180, description="Interview length shown as a countdown")
+    review_brief: bool = Field(False, description="Show the existing brief for review again before the questions")
 
 
 class BriefDecision(BaseModel):
@@ -103,6 +105,9 @@ def _view(graph, session: Session) -> dict:
         "total_questions": len(values.get("questions") or []),
         "language": values.get("language", "en"),
         "ended_early": bool(values.get("ended_early")),
+        # the interview's length and when it really started (questions planned), for the countdown
+        "duration_min": values.get("duration_min"),
+        "interview_started_at": values.get("interview_started_at"),
         # Readable criterion names for the page ("ownership" -> "Personal contribution")
         "rubric": [
             {"id": c["id"], "name": c["name"]}
@@ -160,6 +165,8 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
     db.commit()
 
     approved = interview.brief_status == "approved" and interview.brief
+    # Going back to the brief from an interview: start at the review, with the same brief.
+    review_again = body.review_brief and interview.brief
     initial = {
         "session_id": str(session.id),
         "interview_id": str(interview.id),
@@ -171,8 +178,9 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
             {"doc_type": d.doc_type, "source": d.source, "text": d.raw_text or ""} for d in docs
         ],
         "num_questions": body.num_questions,
-        "brief": interview.brief if approved else None,
-        "brief_approved": bool(approved),
+        "duration_min": body.duration_min,
+        "brief": interview.brief if (approved or review_again) else None,
+        "brief_approved": bool(approved) and not review_again,
     }
     return _run(request.app.state.graph, session, initial, db)
 

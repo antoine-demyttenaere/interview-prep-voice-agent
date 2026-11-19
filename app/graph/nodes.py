@@ -22,6 +22,7 @@ each turn quickly, because in Phase 2 you will be waiting for it to speak.
 """
 
 import json
+from datetime import datetime, timezone
 
 from langgraph.types import interrupt
 
@@ -155,6 +156,7 @@ def plan_questions(state: InterviewState) -> dict:
     )
     return {
         "questions": [q.model_dump() for q in plan.questions[:n]],
+        "interview_started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "q_index": 0,
         "followups": 0,
         "followup_focus": None,
@@ -306,8 +308,14 @@ def final_feedback(state: InterviewState) -> dict:
 # ---------- routing ----------
 
 def route_start(state: InterviewState) -> str:
-    """Reuse an already-approved brief for a new practice session."""
-    return "plan_questions" if state.get("brief_approved") and state.get("brief") else "prepare_brief"
+    """Where a new session starts: an approved brief goes straight to the questions; a brief given
+    but not approved (going back to it from an interview) is shown for review again; no brief
+    means writing one."""
+    if state.get("brief") and state.get("brief_approved"):
+        return "plan_questions"
+    if state.get("brief"):
+        return "review_brief"
+    return "prepare_brief"
 
 
 def route_after_review(state: InterviewState) -> str:

@@ -1,6 +1,36 @@
-# Project rules
+# CLAUDE.md
 
-See [plan.md](plan.md) for the goal, stack, phases and repo layout, and [HOW_IT_WORKS.md](HOW_IT_WORKS.md) for how the code works.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+See [plan.md](plan.md) for the goal, stack, phases and repo layout, and [HOW_IT_WORKS.md](HOW_IT_WORKS.md) for how the code works (section 13 lists the day-to-day commands, section 14 the steps for common changes).
+
+## Commands
+
+The app runs in Docker Compose (Windows host, PowerShell). The project folder is mounted into the `api` container, and uvicorn reloads on changes in `app/` and `prompts/`, so code changes need no rebuild.
+
+- Start: `docker compose up -d` (applies migrations and seeds the question bank, then serves http://localhost:8000, API docs at `/docs`)
+- Logs: `docker compose logs -f api`
+- All tests: `docker compose exec api pytest -q`
+- One test: `docker compose exec api pytest -q tests/test_graph_flow.py::test_end_endpoint`
+- New migration: `docker compose exec api alembic revision --autogenerate -m "add X"`, review the file, then `docker compose restart api`
+- Real Claude + LangSmith check: `docker compose exec api python scripts/smoke_claude.py`
+- After editing `requirements.txt` or the Dockerfile: `docker compose up -d --build`. After editing `.env`: `docker compose up -d --force-recreate api`.
+
+There is no linter or formatter config. Postgres is on host port **5433** (`app` / `app`, database `interview`).
+
+Tests need the `db` container running. They use fakes for Claude, Voyage, Deepgram and ElevenLabs ([tests/conftest.py](tests/conftest.py)), so they make no API calls. They run against the real prompts, graph, API and Postgres checkpointer, in a separate `interview_test` database that is created and migrated automatically. The fake Claude asks for a follow-up when an answer contains "vague". When you add a node or a structured-output schema, extend the fake.
+
+## Architecture in brief
+
+- **One LangGraph graph for every interview mode** ([app/graph/build.py](app/graph/build.py), nodes in [nodes.py](app/graph/nodes.py)): `prepare_brief → review_brief (interrupt) → plan_questions → ask → answer (interrupt) → evaluate_answer → ask… → final_feedback`. Modes differ only in `prompts/modes/<mode>.md`, `rubrics/<mode>.yaml` and, for the technical modes, `question_bank/<mode>.yaml`. Nodes return only the state keys they changed ([state.py](app/graph/state.py)).
+- **HTTP drives the graph** ([app/api/sessions.py](app/api/sessions.py)): each request runs the graph until the next `interrupt()` and returns a "view" (status, pending, final_feedback). Replies resume it with `Command(resume=...)`. `/turn` wraps the same step with speech-to-text before and text-to-speech after, as one LangSmith trace (`voice_turn`).
+- **State lives in the Postgres checkpointer** under `thread_id` = session id. Answers and scores are stored only in the checkpoints. Our own tables ([app/db/models.py](app/db/models.py)) hold interviews, documents, chunks, question_bank and sessions. [app/main.py](app/main.py) compiles the graph with the checkpointer. The module-level `graph` in build.py has none, because LangGraph Studio brings its own.
+- **All Claude calls go through [app/llm.py](app/llm.py)**: `structured()` returns Pydantic objects ([schemas.py](app/graph/schemas.py)), `text_reply()` returns plain text. Failures raise `LLMError`, which the API turns into a 502, and `/retry` re-runs the failed step. Haiku handles each turn and Sonnet handles the brief, the plan and the feedback (set in `.env` with `MODEL_TURN` and `MODEL_REASONING`).
+- **Prompts are files** in `prompts/`, re-read on every call and filled with `prompts.render(name, **values)` from `$placeholders`. A missing value raises an error. The header comment is stripped before the prompt is sent. `interviewer_system.md` (which includes the brief) is prompt-cached, so anything that changes per turn (retrieved `$context`, `$bank_questions`) must go in the user prompt, never in the system prompt.
+- **RAG** ([app/rag/](app/rag/)): parse (PDF, DOCX, .eml, text, web page) → chunk → embed with Voyage (`vector(1024)`) → pgvector cosine search, scoped by `interview_id`. A failed search logs a warning and the question is asked without passages, so the interview doesn't stop.
+- **Speech providers sit behind interfaces** ([app/voice/stt.py](app/voice/stt.py), [tts.py](app/voice/tts.py)), selected with `STT_PROVIDER` and `TTS_PROVIDER`. Every setting comes from [app/config.py](app/config.py) through `get_settings()`.
+
+# Project rules
 
 ## Audience
 
@@ -27,6 +57,38 @@ Usually 3-15 lines; a tiny file needs less. Comment syntax:
 - Sample documents (`samples/`): one first line saying they are fictional (the text is sent to Claude).
 
 Keep the header accurate whenever the file changes.
+
+## Design palette
+
+The web page uses seven colors, defined once as CSS variables at the top of [web/style.css](web/style.css). Every color on the page is one of them, a tint of one, or a gradient between them. Never add a new hue, and never use plain grey surfaces.
+
+| Name | Hex | Role | Used for |
+| --- | --- | --- | --- |
+| Midnight | `#1E2350` | neutral dark | text, headings |
+| Cloud | `#F5F6FB` | neutral light | page background |
+| Indigo | `#4F46E5` | main color | main buttons, focus rings, current step, links, highlighted cards, score 3 |
+| Coral | `#FF6B5B` | accent | recording button, "your gaps", errors, scores 1-2 |
+| Teal | `#14B8A6` | accent | "End and get feedback", strengths, success, scores 4-5 |
+| Sky | `#0EA5E9` | third accent | the first card of each setup step (very light Sky tint `#F4FAFE`, thin softened Sky top stripe) |
+| Sun | `#F5A524` | second accent | the second card of each setup step (very light Sun tint `#FFFAEF`, thin softened Sun top stripe), small highlights |
+
+- Cards and form fields are white (light mode); borders and soft fills are indigo tints, not grey.
+- Each setup step is two cards side by side: the first in the Sky tint, the second in the Sun tint, so both halves stand out from the indigo page. Fields inside them stay white.
+- Dropdowns (`select`) show their arrow as an indigo circle with a white chevron, set in from the right edge.
+- The page background is one solid color, a colorful indigo tint (`#E6E4FC`, dark mode `#181C40`), and the title "Interview Practice" is solid Indigo: no gradients on either.
+- Gradients are allowed only on buttons, and stay subtle: main buttons go from Indigo to a lighter indigo, the success button from Teal to a deeper teal.
+- A button that must wait for the user (e.g. "Approve" before the last brief card is seen) is shown locked in a soft indigo tint, then switches to its action color (Teal for "Approve").
+- Dark mode uses the same seven hues, adjusted for contrast (dark midnight background, lighter indigo / coral / teal).
+- Score colors are the same everywhere: 1-2 coral, 3 indigo, 4-5 teal.
+
+### Typography
+
+Two fonts, loaded from Google Fonts in [web/index.html](web/index.html) and set as `--font-heading` / `--font-body` in [web/style.css](web/style.css):
+
+- **Sora** (500-700) for headings, buttons, step numbers and scores: geometric, corporate with a bit of character.
+- **DM Sans** (400-700) for body text, labels, hints and form fields: clean and readable.
+
+Don't add a third font. The system font is only the fallback when the fonts can't load.
 
 ## Personal data
 

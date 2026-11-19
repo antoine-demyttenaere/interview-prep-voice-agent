@@ -100,8 +100,52 @@ All four modes share this graph; they differ only in prompts, rubrics and questi
 | `sessions` | One practice run | `interview_id`, LangGraph `thread_id`, started / ended |
 | `turns` | Each question and answer | `session_id`, question, transcript, score, LangSmith `run_id` |
 | `feedback` | Final report and my rating of it | `session_id`, rubric scores, strengths, fixes, thumbs up / down |
+| `usage` | Each paid API call (Phase 4.5) | provider, model, units, cost_usd, session_id, created_at |
 
 LangGraph's Postgres checkpointer keeps its own tables for graph state.
+
+## Cost control
+
+All paid APIs together stay under **$10 a month** (AWS hosting is budgeted separately in Phase 5). At about $0.50 per spoken interview, that is about 20 interviews a month.
+
+**Estimated cost of one spoken interview** (5 questions, about 10 turns, 15 minutes of answers). Prices are approximate as of November 2026; confirm them on each provider's pricing page.
+
+| Provider | What is billed | Price | Per interview |
+| --- | --- | --- | --- |
+| Claude Sonnet 5.5 | brief, question plan, final feedback | $2 in / $10 out per million tokens | ~$0.20 |
+| Claude Haiku 5.5 | each question and each score (~20 calls) | $0.10 in / $0.50 out per million tokens | ~$0.01 |
+| ElevenLabs Flash v2.5 | ~4,000 characters spoken | ~$0.05 per 1,000 characters | ~$0.20 |
+| Deepgram Nova-3 | ~15 minutes of recorded answers | ~$0.0043 per minute | ~$0.07 |
+| Voyage voyage-4 | document chunks and search queries | $0.06 per million tokens, first 200M free | ~$0 |
+| **Total** | | | **~$0.48** |
+
+**Monthly budgets.** The app warns at 80% of a budget. At 100% it refuses new sessions, but an interview already running can finish and get its feedback. Each provider also gets its own cap in its console, as a safety net if the app's count is wrong.
+
+| Provider | App budget (USD / month) | Cap at the provider |
+| --- | --- | --- |
+| Claude | 4.50 | workspace spend limit of $6 in the Claude Console |
+| ElevenLabs | 4.00 | a plan with usage-based billing off, so it stops at its quota |
+| Deepgram | 1.00 | prepaid credit only, no auto-recharge |
+| Voyage | 0.50 | free tier; a payment method only to lift the 3 requests / minute limit |
+| **All, per month** | **10.00** | |
+| **All, per day** | **1.50** | stops a runaway day from using the month |
+
+**Limits per session and per input**, so one session or one large file can't use up the budget:
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Interviews started per day | 4 | backs up the daily budget |
+| Brief revisions per session | 3 | each one is a Sonnet call at high effort (~$0.08) |
+| Questions per session | 5 by default, 8 at most | each question adds Haiku calls, speech and feedback length |
+| Follow-ups per question | 2 (3 for system design) | already in place |
+| Recording length per answer | 3 minutes | Deepgram bills per second; the page stops recording at the limit |
+| Spoken question length | 600 characters | ElevenLabs bills per character; longer questions are shown as text only |
+| Question replays | free | each question's audio is saved, so a replay isn't billed again |
+| Documents per interview | 10 files, 200,000 characters in total | they are all sent to Sonnet for the brief, and embedded |
+| Web page imports | 3 per interview, 50,000 characters each | same reason |
+| Eval run (Phase 4) | $1 per run, counted in the monthly budget | a full eval run calls Claude many times |
+
+**How it is enforced:** a `usage` table records every paid call: provider, model, units (tokens, audio seconds, characters) and cost in dollars. Prices are kept in `pricing.yaml`, so a price change is a one-line edit. A guard checks the budgets before each session starts and before each paid call. The web page shows the month's spend. Every limit is set in `.env` (e.g. `BUDGET_MONTHLY_USD`). LangSmith's cost per trace is a cross-check for Claude.
 
 ## Phases
 
@@ -138,12 +182,22 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 **Check:** the LangSmith trace shows which document each question came from.
 
 ### Phase 4: Evals
-- [ ] Offline dataset: about 30 sample answers (strong, weak, off-topic), each with an expected score range
+- [x] Offline dataset: 36 answers (30 fictional + 6 from real sessions, git-ignored), each with an expected score range and follow-up decision ([evals/answer_scoring/](evals/answer_scoring/))
 - [ ] LLM-as-judge evaluators: scoring accuracy, question relevance to the documents, sensible follow-ups, brief grounded in the documents
 - [ ] Coded checks: no repeated questions, the agent stays in role, turn latency budget
-- [ ] `./scripts/eval.ps1` compares every prompt change with the previous run; thumbs up / down on feedback is attached to the trace
+- [x] `./scripts/eval.ps1` compares every prompt change with the previous run (LangSmith experiment + local summary)
+- [ ] Thumbs up / down on feedback attached to the trace
 
 **Check:** an eval run report in LangSmith that I can compare across prompt versions.
+
+### Phase 4.5: Cost control (before the public URL)
+- [ ] `usage` table and `pricing.yaml`; record the cost of every Claude, Deepgram, ElevenLabs and Voyage call
+- [ ] Budget guard: warn at 80%, refuse new sessions at 100% of the monthly or daily budget, let a running interview finish
+- [ ] Per-session and per-input limits from the Cost control section, set in `.env`
+- [ ] Save each question's audio so replays are free
+- [ ] Month's spend shown on the web page; a cap set in each provider's console
+
+**Check:** with the monthly budget set to $0.01, a running interview still ends with feedback and a new one is refused with a clear message. The recorded cost of one real interview is within 20% of what the providers' dashboards show.
 
 ### Phase 5: AWS with Terraform
 - [ ] Terraform modules: network, ECR, ECS Fargate, RDS Postgres (pgvector), S3 for uploads, ALB with HTTPS, Secrets Manager
@@ -211,3 +265,4 @@ The proposal is Deepgram + ElevenLabs. No public per-vendor usage figures exist,
 - [x] Does Claude write the code for each phase, or guide me while I write it? **Claude writes it**, explained for beginners (file headers + HOW_IT_WORKS.md)
 - [x] Interview languages: **English, French and Spanish from the MVP** (decided 2026-11-19)
 - [x] Which languages should the feedback report be in? **The interview's language** (default chosen with the language decision; easy to change in `prompts/final_feedback.md`)
+- [ ] ElevenLabs plan: the free tier (about 5 interviews a month) or a paid plan? A subscription would use a large share of the $10 budget.

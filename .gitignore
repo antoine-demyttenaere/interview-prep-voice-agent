@@ -7,9 +7,12 @@
 # - brief_edit.json: temporary file the CLI writes when you edit a brief by hand.
 # - my_docs/: your real CV, job posts and recruiter emails (personal data). Keep them here,
 #   not in samples/, which is committed and holds fictional examples only.
+# - evals/private/: eval cases built from your real answers; evals/*/runs/: local eval summaries.
 
 .env
 my_docs/
+evals/private/
+evals/*/runs/
 __pycache__/
 *.pyc
 .venv/

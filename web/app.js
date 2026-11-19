@@ -116,6 +116,7 @@ async function run(text, action) {
   try {
     await action();
   } catch (err) {
+    hidePending(); // no "..." left behind when a step fails
     showError(err.message);
     // A failed Claude call leaves the session "stopped": reload the view so Retry appears.
     if (err.status === 502 && state.sessionId) {
@@ -172,7 +173,7 @@ function render(view) {
 // --- carousel: a row of cards you scroll (or swipe) from left to right ---
 // cards: [{title, cls, content: [nodes]}]. Arrows move one card; dots show where you are.
 
-function carousel(cards) {
+function carousel(cards, onChange) {
   const track = el("div", { class: "carousel-track" },
     cards.map((c, i) => el("article", { class: `slide ${c.cls || ""}` },
       el("h3", {}, el("span", { class: "slide-no" }, i + 1), c.title), ...c.content)));
@@ -186,8 +187,8 @@ function carousel(cards) {
     track.scrollTo({ left: s.offsetLeft + s.offsetWidth / 2 - track.clientWidth / 2, behavior: "smooth" });
   };
   const step = (dir) => goTo(current + dir);
-  const prev = el("button", { type: "button", class: "btn btn-ghost arrow", "aria-label": "Previous" }, "‹");
-  const next = el("button", { type: "button", class: "btn btn-ghost arrow", "aria-label": "Next" }, "›");
+  const prev = el("button", { type: "button", class: "btn arrow", "aria-label": "Previous card" }, "‹");
+  const next = el("button", { type: "button", class: "btn arrow", "aria-label": "Next card" }, "›");
   prev.onclick = () => step(-1);
   next.onclick = () => step(1);
   slides.forEach((s, i) => s.addEventListener("click", () => { if (i !== current) goTo(i); }));
@@ -200,8 +201,9 @@ function carousel(cards) {
       Math.abs(slides[best].offsetLeft + slides[best].offsetWidth / 2 - middle) ? i : best, 0);
     slides.forEach((s, i) => s.classList.toggle("current", i === current));
     [...dots.children].forEach((d, i) => d.classList.toggle("on", i === current));
-    prev.disabled = current === 0;
-    next.disabled = current === slides.length - 1;
+    prev.classList.toggle("off", current === 0);
+    next.classList.toggle("off", current === slides.length - 1);
+    if (onChange) onChange(current, slides.length);
   };
   track.addEventListener("scroll", () => requestAnimationFrame(update));
   requestAnimationFrame(update);
@@ -220,8 +222,20 @@ document.addEventListener("keydown", (e) => {
 
 // --- brief: six cards in reading order ---
 
+// "Approve" stays locked until you have reached the last card, so you go through the whole brief.
+function setApprove(ready, left) {
+  $("approve").classList.toggle("btn-locked", !ready);
+  $("approve").classList.toggle("btn-ready", ready);
+  $("approve").setAttribute("aria-disabled", String(!ready));
+  $("approve-hint").textContent = ready
+    ? "Ready when you are."
+    : `Go through the cards first: ${left} more to see.`;
+}
+
 function renderBrief(b) {
   showPanel("brief");
+  let seenLast = false;
+  setApprove(false, 5);
   const people = b.interviewers.map((i) => `${i.name}, ${i.role}${i.notes ? ` (${i.notes})` : ""}`);
   $("brief").replaceChildren(carousel([
     { title: "Focus on", cls: "accent", content: [list(b.focus_areas)] },
@@ -230,7 +244,10 @@ function renderBrief(b) {
     { title: "The role needs", content: [list(b.role_requirements)] },
     { title: "Your gaps", cls: "warn", content: [list(b.cv_gaps)] },
     { title: "Likely questions", content: [list(b.probable_questions, true)] },
-  ]));
+  ], (current, total) => {
+    if (current === total - 1) seenLast = true;
+    setApprove(seenLast, total - 1 - current);
+  }));
 }
 
 // --- interview: the transcript grouped by question ---
@@ -260,6 +277,38 @@ function renderTranscript(turns) {
   $("transcript").lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+// A temporary "..." bubble at the end of the conversation: role "candidate" while you speak,
+// "interviewer" while the next question is being prepared. render() replaces it.
+function showPending(role) {
+  hidePending();
+  const bubble = el("div", { class: `line ${role} pending`, id: "pending-bubble" },
+    el("span", { class: "who" }, role === "interviewer" ? "Interviewer" : "You"),
+    el("span", { class: "dots", "aria-label": role === "interviewer" ? "The interviewer is thinking" : "Recording" },
+      el("i"), el("i"), el("i")));
+  $("transcript").append(bubble);
+  bubble.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function hidePending() { $("pending-bubble")?.remove(); }
+
+// ---------- interview countdown (the duration chosen at setup) ----------
+const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function updateClock() {
+  const v = state.view;
+  const running = v && v.duration_min && v.interview_started_at && v.status === "waiting"
+    && v.pending && v.pending.type === "answer";
+  $("clock").hidden = !running;
+  if (!running) return;
+  const total = v.duration_min * 60;
+  const left = Math.max(0, total - (Date.now() - Date.parse(v.interview_started_at)) / 1000);
+  $("clock-text").textContent = fmt(left);
+  $("clock-fill").style.width = `${(left / total) * 100}%`;
+  $("clock").classList.toggle("low", left <= 5 * 60);
+  $("clock-note").hidden = left > 0;
+  $("end-interview").classList.toggle("urgent", left === 0);
+}
+setInterval(updateClock, 1000);
+
 function setProgress(qIndex, total, note) {
   $("progress").textContent = total ? `Question ${Math.min(qIndex + 1, total)} of ${total}` : "Interview";
   $("progress-fill").style.width = total ? `${Math.round((qIndex / total) * 100)}%` : "0";
@@ -274,6 +323,7 @@ function renderInterview(view) {
   $("voice-controls").hidden = !state.voiceOn;
   $("text-controls").hidden = state.voiceOn;
   $("end-interview").hidden = false;
+  updateClock();
 }
 
 function renderStopped(view) {
@@ -375,7 +425,7 @@ async function loadStoredCv() {
   }
   const box = $("my-cv");
   if (!state.storedCv.length) {
-    box.replaceChildren(el("p", { class: "muted small" }, "No CV stored yet: add one below."));
+    box.replaceChildren(el("p", { class: "empty" }, "No CV stored yet: add one on the right."));
   } else {
     box.replaceChildren(...state.storedCv.map((d) => {
       const del = el("button", { type: "button", class: "btn btn-danger btn-small" }, "Delete");
@@ -408,8 +458,10 @@ $("files-input").addEventListener("change", (e) => {
 });
 
 // ---------- setup: the 3-step form (left to right) ----------
-// The steps sit side by side in #wizard-track; going to a step scrolls the track to it.
-// Swiping scrolls it too, and the scroll listener keeps the step bar and buttons in sync.
+// The steps sit side by side on #wizard-rail, inside #wizard-track (which clips). Going to a
+// step slides the rail with a CSS transform; the other steps are made `inert` (no focus, no
+// clicks), so nothing can scroll a half-hidden step into view. A swipe on a touchscreen also
+// moves one step.
 
 const wizard = { step: 0, count: 3 };
 const WIZARD_HINTS = [
@@ -430,23 +482,26 @@ function updateWizard() {
   $("wizard-hint").textContent = WIZARD_HINTS[wizard.step];
 }
 
-// The form is as tall as the step on screen (not the tallest one), so there is no empty space.
+// The form keeps the height of its tallest step on every step, so the Back / Next bar stays in
+// the same place when you move between steps.
 function fitTrack() {
-  const step = $("wizard-track").children[wizard.step];
-  if (step && step.offsetHeight) $("wizard-track").style.height = `${step.offsetHeight}px`;
+  const tallest = Math.max(...[...$("wizard-rail").children].map((s) => s.offsetHeight));
+  if (tallest > 0) $("wizard-track").style.height = `${tallest}px`;
 }
 
 function goStep(i, smooth = true) {
   wizard.step = Math.max(0, Math.min(wizard.count - 1, i));
-  const track = $("wizard-track");
-  track.scrollTo({ left: wizard.step * track.clientWidth, behavior: smooth ? "smooth" : "auto" });
+  const rail = $("wizard-rail");
+  rail.style.transition = smooth ? "" : "none";
+  rail.style.transform = `translateX(${-100 * wizard.step}%)`;
+  [...rail.children].forEach((s, k) => { s.inert = k !== wizard.step; });
   updateWizard();
   fitTrack();
 }
 
 // A step's height also changes when its content does (file chips, the stored CV list...).
 const stepResize = new ResizeObserver(fitTrack);
-[...$("wizard-track").children].forEach((s) => stepResize.observe(s));
+[...$("wizard-rail").children].forEach((s) => stepResize.observe(s));
 
 // Step 1 needs a company and a role before moving on.
 function stepOneValid() {
@@ -471,13 +526,20 @@ $("wizard-back").addEventListener("click", () => goStep(wizard.step - 1));
 [...$("wizard-steps").children].forEach((li, i) =>
   li.addEventListener("click", () => { if (i <= wizard.step || stepOneValid()) goStep(i); }));
 
-// Swiping (or scrolling) the track moves to the step that is in view.
-$("wizard-track").addEventListener("scroll", () => {
-  const track = $("wizard-track");
-  const i = Math.round(track.scrollLeft / track.clientWidth);
-  if (i !== wizard.step) { wizard.step = i; updateWizard(); fitTrack(); }
+// A horizontal swipe on a touchscreen moves one step (left = next, right = back).
+let swipeStart = null;
+$("wizard-track").addEventListener("touchstart", (e) => {
+  swipeStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: true });
+$("wizard-track").addEventListener("touchend", (e) => {
+  if (!swipeStart) return;
+  const dx = e.changedTouches[0].clientX - swipeStart.x;
+  const dy = e.changedTouches[0].clientY - swipeStart.y;
+  swipeStart = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return; // a tap or a vertical scroll
+  if (dx < 0) nextStep(); else goStep(wizard.step - 1);
 });
-window.addEventListener("resize", () => goStep(wizard.step, false));
+window.addEventListener("resize", fitTrack);
 
 // Enter in a one-line field = Next (or "Write my brief" on the last step); Enter in a text area adds a line.
 $("setup-form").addEventListener("keydown", (e) => {
@@ -486,8 +548,7 @@ $("setup-form").addEventListener("keydown", (e) => {
   if (wizard.step < wizard.count - 1) nextStep();
   else $("setup-form").requestSubmit($("wizard-submit"));
 });
-updateWizard();
-fitTrack();
+goStep(0, false);
 
 // ---------- setup: write my brief ----------
 
@@ -497,7 +558,12 @@ $("setup-form").addEventListener("submit", (e) => {
   if (!stepOneValid()) return;
   const f = new FormData(e.target);
   const job = f.get("job_post").trim(), notes = f.get("notes").trim(), cv = f.get("cv").trim();
-  const links = f.get("links").split(/\s+/).map((s) => s.trim()).filter(Boolean);
+  const jobLink = f.get("job_link").trim();
+  // the job post's link is stored as the job post; the company pages as web pages
+  const links = [
+    ...(jobLink ? [{ url: jobLink, doc_type: "job_post" }] : []),
+    ...f.get("links").split(/\s+/).map((s) => s.trim()).filter(Boolean).map((url) => ({ url, doc_type: "web_page" })),
+  ];
   const files = f.getAll("files").filter((file) => file.size), cvFile = f.get("cv_file");
   const hasCvFile = cvFile && cvFile.size;
   const replaceCv = f.get("replace_cv") === "on";
@@ -554,18 +620,19 @@ $("setup-form").addEventListener("submit", (e) => {
     // Links: the server reads each page. A page that cannot be read does not stop the brief;
     // it is listed so you can paste its text instead.
     const failed = [];
-    for (const url of links) {
+    for (const { url, doc_type } of links) {
       try {
-        const doc = await api("POST", "/documents/from-url", { interview_id: interview.id, url });
+        const doc = await api("POST", "/documents/from-url", { interview_id: interview.id, url, doc_type });
         if (doc.embedding_error) failed.push(`${url} was read but not indexed: ${doc.embedding_error}`);
       } catch (err) {
         failed.push(err.message);
       }
     }
-    if (links.length) $("setup-form").elements.links.value = "";
+    if (links.length) { $("setup-form").elements.links.value = ""; $("setup-form").elements.job_link.value = ""; }
 
     const questions = Number(f.get("questions")) || null;
-    const view = await api("POST", `/interviews/${interview.id}/sessions`, { num_questions: questions });
+    const view = await api("POST", `/interviews/${interview.id}/sessions`,
+      { num_questions: questions, duration_min: Number(f.get("duration")) || null });
     state.editing = null;
     clearDraft();
     render(view);
@@ -585,9 +652,15 @@ $("resume-id").addEventListener("keydown", (e) => {
 
 // ---------- brief review ----------
 
-$("approve").addEventListener("click", () =>
+$("approve").addEventListener("click", () => {
+  if ($("approve").classList.contains("btn-locked")) {
+    // Still locked: move to the next card instead, so the click is not lost.
+    $("brief").querySelector(".carousel")?.step(1);
+    return;
+  }
   run("Planning the questions...", async () =>
-    afterView(await api("POST", `/sessions/${state.sessionId}/resume`, { value: { action: "approve" } }))));
+    afterView(await api("POST", `/sessions/${state.sessionId}/resume`, { value: { action: "approve" } })));
+});
 
 $("revise").addEventListener("click", () => {
   const feedback = $("brief-feedback").value.trim();
@@ -618,6 +691,17 @@ async function startRecording() {
     state.autoStop = setTimeout(stopRecording, MAX_RECORDING_MS);
     $("talk").classList.add("recording");
     $("talk").textContent = "Stop and send";
+    showPending("candidate");
+    // "1:23 / 5:00" under the button; coral blinking in the last 30 seconds
+    const limit = MAX_RECORDING_MS / 1000;
+    const tick = () => {
+      const s = (Date.now() - state.recordStart) / 1000;
+      $("rec-timer").textContent = `${fmt(s)} / ${fmt(limit)}`;
+      $("rec-timer").classList.toggle("late", s >= limit - 30);
+    };
+    tick();
+    $("rec-timer").hidden = false;
+    state.recTick = setInterval(tick, 250);
   } catch (err) {
     state.recorder = null;
     showError(`Microphone unavailable: ${err.message}. Allow the microphone for localhost, or switch voice off.`);
@@ -631,6 +715,9 @@ function stopRecording() {
   if (!recorder) return;
   state.recorder = null;
   clearTimeout(state.autoStop);
+  clearInterval(state.recTick);
+  $("rec-timer").hidden = true;
+  hidePending();
   $("talk").classList.remove("recording");
   $("talk").textContent = "Start answering";
 
@@ -639,6 +726,7 @@ function stopRecording() {
     const blob = new Blob(state.chunks, { type: recorder.mimeType });
     const form = new FormData();
     form.append("audio", blob, `answer.${recorder.mimeType.includes("ogg") ? "ogg" : recorder.mimeType.includes("mp4") ? "mp4" : "webm"}`);
+    showPending("interviewer");
     run("Listening and thinking...", async () => {
       const reply = await api("POST", `/sessions/${state.sessionId}/turn`, form, true);
       render(reply);
@@ -684,6 +772,7 @@ $("text-controls").addEventListener("submit", (e) => {
   e.preventDefault();
   const value = $("typed-answer").value.trim();
   if (!value) return;
+  showPending("interviewer");
   run("Thinking...", async () => {
     const t0 = performance.now();
     const view = await api("POST", `/sessions/${state.sessionId}/resume`, { value });
@@ -700,6 +789,9 @@ $("end-interview").addEventListener("click", () => {
   if (!confirm("End the interview now and get feedback on your answers so far?")) return;
   if (state.recorder) { // drop an unfinished recording without sending it
     clearTimeout(state.autoStop);
+    clearInterval(state.recTick);
+    $("rec-timer").hidden = true;
+    hidePending();
     state.recorder.stop();
     state.recorder = null;
     $("talk").classList.remove("recording");
@@ -711,7 +803,7 @@ $("end-interview").addEventListener("click", () => {
 
 // --- the setup form's draft: what you typed is kept in this browser, so a reload never empties it ---
 
-const DRAFT_FIELDS = ["company", "role", "mode", "language", "questions", "job_post", "notes", "links", "cv"];
+const DRAFT_FIELDS = ["company", "role", "mode", "language", "questions", "duration", "job_link", "job_post", "notes", "links", "cv"];
 
 function saveDraft() {
   const f = $("setup-form").elements;
@@ -733,18 +825,18 @@ function editingChanged() {
   if (!ed) return true;
   const f = $("setup-form").elements;
   if (ed.changed) return true; // a document or CV was removed
-  if (["company", "role", "mode", "language", "questions"].some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
+  if (["company", "role", "mode", "language", "questions", "duration"].some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
   for (const docType of ["job_post", "notes"]) {
     if (f[docType].value.trim() !== ((ed.pasted[docType] && ed.pasted[docType].text) || "").trim()) return true;
   }
-  if (f.links.value.trim() || f.cv.value.trim()) return true;
+  if (f.job_link.value.trim() || f.links.value.trim() || f.cv.value.trim()) return true;
   if ($("files-input").files.length || $("cv-file-input").files.length) return true;
   return false;
 }
 
 function updateSubmitLabel() {
   $("wizard-submit").textContent = state.editing && !editingChanged()
-    ? "Back to my brief ›"
+    ? (state.editing.returnTo === "interview" ? "Back to my interview ›" : "Back to my brief ›")
     : "Prepare my interview brief ›";
 }
 
@@ -802,8 +894,10 @@ $("new-interview").addEventListener("click", goToSetup);
 // From the brief: back to the setup form, filled in from the server (company, role, type,
 // language, pasted texts, files already added). The session and its brief are kept: "Return to
 // the brief" goes back to it unchanged; "Write my brief" updates this same interview.
-$("brief-back").addEventListener("click", () => {
-  const view = state.view;
+// Open the setup form for the interview of `view`, filled in from the server. returnTo says
+// where "Return to..." goes: "brief" (the brief waiting for review) or "interview" (the
+// interview in progress, where you left it).
+function editSetup(view, returnTo) {
   run("Loading your documents...", async () => {
     const iv = await api("GET", `/interviews/${view.interview_id}`);
     const f = $("setup-form").elements;
@@ -822,14 +916,37 @@ $("brief-back").addEventListener("click", () => {
     }
     renderExistingDocs(iv.documents.filter((d) => !pasted[d.doc_type] || pasted[d.doc_type].id !== d.id));
     state.editing = {
-      interviewId: iv.id, sessionId: view.session_id, pasted, changed: false,
+      interviewId: iv.id, sessionId: view.session_id, returnTo, pasted, changed: false,
       // what the brief was based on, to tell later whether anything changed
-      original: { company: iv.company, role: iv.role, mode: iv.mode, language: iv.language, questions: f.questions.value },
+      original: { company: iv.company, role: iv.role, mode: iv.mode, language: iv.language,
+        questions: f.questions.value, duration: f.duration.value },
     };
+    if (view.total_questions) f.questions.value = view.total_questions;
+    if (view.duration_min) f.duration.value = view.duration_min;
+    state.editing.original.questions = f.questions.value;
+    state.editing.original.duration = f.duration.value;
+    $("back-to-brief").textContent = returnTo === "interview" ? "Return to the interview ›" : "Return to the brief ›";
     saveDraft();
-    showSetup(2);
+    showSetup(returnTo === "interview" ? 0 : 2);
+  });
+}
+
+$("brief-back").addEventListener("click", () => editSetup(state.view, "brief"));
+
+// From the interview: stop and go back to the brief. A new session starts at the brief review,
+// with the same brief (no new call to Claude unless you ask for changes). This one stays saved.
+$("interview-to-brief").addEventListener("click", () => {
+  const view = state.view;
+  if (!confirm(`Stop this interview and go back to the brief?\nIt stays saved under the session id ${view.session_id}.`)) return;
+  run("Opening the brief...", async () => {
+    render(await api("POST", `/interviews/${view.interview_id}/sessions`, {
+      num_questions: view.total_questions || null, duration_min: view.duration_min || null, review_brief: true,
+    }));
   });
 });
+
+// From the interview: go back to the setup form, with everything filled in.
+$("interview-to-setup").addEventListener("click", () => editSetup(state.view, "interview"));
 
 // Back to the brief that was waiting, unchanged.
 $("back-to-brief").addEventListener("click", () => {
@@ -852,7 +969,9 @@ function currentTheme() {
     || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 }
 function updateThemeButton() {
-  $("theme").textContent = currentTheme() === "dark" ? "Light mode" : "Dark mode";
+  const dark = currentTheme() === "dark";
+  $("theme").setAttribute("aria-checked", String(dark)); // moves the knob to the moon
+  $("theme").title = dark ? "Switch to light mode" : "Switch to dark mode";
 }
 $("theme").addEventListener("click", () => {
   const next = currentTheme() === "dark" ? "light" : "dark";

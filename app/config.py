@@ -7,7 +7,7 @@ When a variable is not set, the default written here is used.
 Other code calls get_settings() instead of reading os.environ directly. @lru_cache makes it
 build the Settings object once and return the same one afterwards.
 
-To change a model or a limit: set it in .env (e.g. NUM_QUESTIONS=3), then
+To change a model, a voice or a limit: set it in .env (e.g. NUM_QUESTIONS=3), then
 `docker compose up -d --force-recreate api` so the container picks up the new value.
 """
 
@@ -31,6 +31,17 @@ class Settings(BaseSettings):
 
     num_questions: int = 5  # planned main questions per session
     max_followups: int = 2  # follow-ups allowed per main question
+
+    # Speech (Phase 2). Providers sit behind interfaces in app/voice/.
+    stt_provider: str = "deepgram"  # speech-to-text
+    deepgram_api_key: str = ""
+    stt_model: str = "nova-3"
+    tts_provider: str = "elevenlabs"  # text-to-speech
+    elevenlabs_api_key: str = ""
+    tts_model: str = "eleven_flash_v2_5"  # low latency; speaks en, fr, es
+    elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"  # a premade voice; any voice id works
+    tts_output_format: str = "mp3_44100_64"
+    save_audio: bool = False  # keep each recorded answer in evals/audio/ for replay tests
 
     @property
     def psycopg_url(self) -> str:

@@ -1,7 +1,7 @@
 """Tests of the interview flow with Claude replaced by a fake: free, fast, no API key needed.
 
-FakeClaude stands in for app.llm.structured / text_reply (monkeypatch swaps them inside
-nodes.py) and returns fixed answers; it asks for a follow-up whenever an answer contains
+FakeClaude (tests/conftest.py) stands in for app.llm.structured / text_reply (monkeypatch swaps
+them inside nodes.py) and returns fixed answers; it asks for a follow-up whenever an answer contains
 "vague". The real prompt files are still rendered, so a broken placeholder fails here.
 
 - test_full_session_with_revision_and_followups: revise then approve the brief, follow-ups
@@ -15,74 +15,12 @@ nodes.py) and returns fixed answers; it asks for a follow-up whenever an answer 
 
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from app.graph import nodes
 from app.graph.build import build_graph
-from app.graph.schemas import (
-    AnswerEvaluation,
-    CriterionScore,
-    FinalFeedback,
-    InterviewBrief,
-    PlannedQuestion,
-    QuestionPlan,
-)
-
-BRIEF = InterviewBrief(
-    company_summary="Fake Co makes fakes.",
-    role_requirements=["Python"],
-    interview_format="One hour",
-    interviewers=[],
-    cv_gaps=["none"],
-    focus_areas=["ownership"],
-    probable_questions=["Tell me about a failure"],
-)
-
-
-class FakeClaude:
-    """Stands in for app.llm.structured / text_reply. Follows up when an answer says 'vague'."""
-
-    def __init__(self):
-        self.calls: list[str] = []
-
-    def structured(self, *, schema, user, **_):
-        self.calls.append(schema.__name__)
-        if schema is InterviewBrief:
-            return BRIEF
-        if schema is QuestionPlan:
-            return QuestionPlan(
-                questions=[PlannedQuestion(text=f"Q{i}", topic="t", rationale="r") for i in range(1, 4)]
-            )
-        if schema is AnswerEvaluation:
-            last_answer = user.rsplit("Candidate:", 1)[-1].split("</exchange>", 1)[0]
-            vague = "vague" in last_answer
-            return AnswerEvaluation(
-                scores=[CriterionScore(criterion="structure", score=2 if vague else 4, note="n")],
-                overall=2 if vague else 4,
-                summary="s",
-                follow_up=vague,
-                follow_up_focus="give details" if vague else "",
-            )
-        if schema is FinalFeedback:
-            return FinalFeedback(
-                overall_score=3, summary="ok", rubric_scores=[], per_question=[], strengths=["a"], fixes=["b"]
-            )
-        raise AssertionError(schema)
-
-    def text_reply(self, *, user, **_):
-        self.calls.append("ask")
-        return "follow-up?" if "needs a follow-up" in user else "next question?"
-
-
-@pytest.fixture
-def fake(monkeypatch):
-    f = FakeClaude()
-    monkeypatch.setattr(nodes, "structured", f.structured)
-    monkeypatch.setattr(nodes, "text_reply", f.text_reply)
-    return f
+from conftest import BRIEF
 
 
 def _initial(**extra):
@@ -161,3 +99,14 @@ def test_api_session_survives_restart(fake):
             view = client.post(f"/sessions/{sid}/resume", json={"value": "good"}).json()
         assert view["status"] == "done"
         assert client.get(f"/interviews/{iv['id']}").json()["brief_status"] == "approved"
+
+
+def test_language_reaches_the_prompts(fake):
+    """A French interview tells Claude to write the brief and run the interview in French."""
+    graph = build_graph().compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t3"}}
+    graph.invoke(_initial(language="fr"), config)  # prepare_brief
+    graph.invoke(Command(resume={"action": "approve"}), config)  # plan_questions
+    assert "write the brief in French" in fake.systems[0]
+    assert "The interview is in French" in fake.systems[1]
+

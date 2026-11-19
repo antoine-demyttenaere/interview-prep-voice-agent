@@ -30,6 +30,7 @@ class InterviewState(TypedDict, total=False):
     session_id: str
     interview_id: str
     mode: str  # behavioral | job_post (technical_backend, system_design in Phase 3)
+    language: str  # en | fr | es (missing in sessions started before Phase 2 = "en")
     company: str
     role: str
     documents: list[DocumentInput]

@@ -3,7 +3,7 @@
 # - .env holds your real API keys: committing it would leak them (.env.example is the template).
 # - __pycache__/, *.pyc: compiled Python files, recreated automatically.
 # - .venv/, .pytest_cache/, .langgraph_api/: local tool folders (virtualenv, pytest, LangGraph Studio).
-# - evals/audio/*.wav: recorded test audio (Phase 4), large and personal.
+# - evals/audio/: your recorded answers (SAVE_AUDIO=true), large and personal.
 # - brief_edit.json: temporary file the CLI writes when you edit a brief by hand.
 
 .env
@@ -12,5 +12,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 .langgraph_api/
-evals/audio/*.wav
+evals/audio/
 brief_edit.json

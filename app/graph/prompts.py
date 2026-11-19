@@ -17,6 +17,8 @@ from string import Template
 
 import yaml
 
+from app.voice import LANGUAGES
+
 ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = ROOT / "prompts"
 RUBRICS = ROOT / "rubrics"
@@ -26,6 +28,11 @@ _HEADER = re.compile(r"\A\s*<!--.*?-->\s*", re.DOTALL)
 
 def _read(path: Path) -> str:
     return _HEADER.sub("", path.read_text(encoding="utf-8")).strip()
+
+
+def language_name(code: str) -> str:
+    """'fr' -> 'French', for prompts. Unknown codes fall back to English."""
+    return LANGUAGES.get(code, "English")
 
 
 def mode_guidance(mode: str) -> str:

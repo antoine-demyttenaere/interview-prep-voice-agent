@@ -1,0 +1,115 @@
+<!--
+index.html - the one web page of the app: set up an interview, review the brief, talk, read the feedback.
+
+Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the web/ folder).
+The page only shows things and sends requests to the API; app.js holds the logic and
+style.css the look. There are four panels, and app.js shows one at a time:
+  1. setup     - describe the interview, paste the documents, or continue an earlier session
+  2. brief     - read the Interview Brief, approve it or ask for changes
+  3. interview - hold the button (or Space) to answer out loud, or switch to typing
+  4. feedback  - the final scored report
+No build step and no framework: edit a file, reload the page.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interview Practice</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Interview Practice</h1>
+    <span id="session-label" class="muted"></span>
+  </header>
+
+  <main>
+    <p id="error" class="error" hidden></p>
+    <p id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">Working...</span></p>
+
+    <!-- 1. Setup -->
+    <section id="panel-setup" class="panel">
+      <h2>New interview</h2>
+      <form id="setup-form">
+        <div class="row">
+          <label>Company <input name="company" required placeholder="Northwind Logistics"></label>
+          <label>Role <input name="role" required placeholder="Senior Backend Engineer"></label>
+        </div>
+        <div class="row">
+          <label>Interview type
+            <select name="mode">
+              <option value="behavioral">Behavioral / HR</option>
+              <option value="job_post">Tailored to the job post</option>
+            </select>
+          </label>
+          <label>Language
+            <select name="language">
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+          <label>Questions <input name="questions" type="number" min="1" max="15" value="5"></label>
+        </div>
+        <label>Job post <textarea name="job_post" rows="6" placeholder="Paste the job post"></textarea></label>
+        <label>Recruiter emails or notes <span class="muted">(optional)</span>
+          <textarea name="notes" rows="4" placeholder="Paste emails, notes from a call..."></textarea></label>
+        <label>Your CV <span class="muted">(optional; stored once and used for every interview)</span>
+          <textarea name="cv" rows="4" placeholder="Paste your CV as text, or leave empty if already added"></textarea></label>
+        <button type="submit" class="primary">Write my brief</button>
+      </form>
+
+      <h2>Continue a session</h2>
+      <form id="resume-form" class="inline">
+        <input name="session_id" placeholder="Session id" required>
+        <button type="submit">Continue</button>
+      </form>
+    </section>
+
+    <!-- 2. Brief review -->
+    <section id="panel-brief" class="panel" hidden>
+      <h2>Your Interview Brief</h2>
+      <div id="brief"></div>
+      <div class="actions">
+        <button id="approve" class="primary">Approve and start the interview</button>
+      </div>
+      <label>Or ask for changes
+        <textarea id="brief-feedback" rows="3" placeholder="e.g. The interviewer is the CTO, not the engineering manager"></textarea>
+      </label>
+      <button id="revise">Rewrite the brief</button>
+    </section>
+
+    <!-- 3. Interview -->
+    <section id="panel-interview" class="panel" hidden>
+      <div class="interview-head">
+        <h2 id="progress">Question 1</h2>
+        <label class="toggle"><input type="checkbox" id="voice-toggle" checked> Voice</label>
+      </div>
+      <div id="transcript" class="transcript"></div>
+
+      <div id="voice-controls" class="controls">
+        <button id="talk" class="talk" type="button">Hold to talk</button>
+        <p class="muted">Hold the button, or hold <kbd>Space</kbd>, while you answer. Release to send.</p>
+        <button id="replay" type="button">Replay the question</button>
+      </div>
+
+      <form id="text-controls" class="controls" hidden>
+        <textarea id="typed-answer" rows="4" placeholder="Type your answer"></textarea>
+        <button type="submit" class="primary">Send answer</button>
+      </form>
+
+      <p id="timings" class="muted small"></p>
+    </section>
+
+    <!-- 4. Feedback -->
+    <section id="panel-feedback" class="panel" hidden>
+      <h2>Your feedback</h2>
+      <div id="feedback"></div>
+      <button id="new-interview">Back to start</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -161,6 +161,8 @@ def main() -> None:
     new.add_argument("--company", required=True)
     new.add_argument("--role", required=True)
     new.add_argument("--mode", default="behavioral", choices=["behavioral", "job_post"])
+    new.add_argument("--language", default="en", choices=["en", "fr", "es"],
+                     help="language of the interview, brief and feedback")
     new.add_argument("--interviewer", action="append", default=[], help="name, repeatable")
     new.add_argument("--doc", action="append", default=[], metavar="TYPE:PATH",
                      help="job_post | recruiter_email | notes | other, then a text file; repeatable")
@@ -178,7 +180,8 @@ def main() -> None:
     try:
         if args.cmd == "new":
             interview = call("POST", "/interviews", {
-                "company": args.company, "role": args.role, "mode": args.mode, "interviewers": args.interviewer,
+                "company": args.company, "role": args.role, "mode": args.mode, "language": args.language,
+                "interviewers": args.interviewer,
             })
             print(f"Interview {interview['id']} created.")
             if args.cv:

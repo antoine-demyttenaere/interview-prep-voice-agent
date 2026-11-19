@@ -33,8 +33,8 @@ Claude does the reasoning. The speech, voice and embedding providers each sit be
 | --- | --- | --- | --- |
 | LLM, each interview turn | Claude Haiku 5.5 | Decided | Fast enough for spoken turns |
 | LLM, brief and final feedback | Claude Sonnet 5.5 | Decided | Better reasoning; speed matters less |
-| Speech-to-text | Deepgram (Nova-3 / Flux) | Proposed | Most common pick for voice agents; streaming and end-of-speech detection; multilingual |
-| Text-to-speech | ElevenLabs | Proposed | Most natural voices; French and Spanish |
+| Speech-to-text | Deepgram (Nova-3 / Flux) | Decided | Most common pick for voice agents; streaming and end-of-speech detection; multilingual |
+| Text-to-speech | ElevenLabs (Flash v2.5) | Decided | Most natural voices; French and Spanish |
 | Embeddings | Voyage AI (`vector(1024)`) | Decided | Anthropic has no embedding model and recommends Voyage |
 | Orchestration | LangGraph + LangChain | Decided | Explicit state graph, `interrupt()` for human steps |
 | Storage | PostgreSQL + pgvector | Decided | Interview state (checkpointer), documents, vectors |
@@ -123,9 +123,10 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 **Check:** I approve a brief, then do a typed 5-question interview based on it and get final feedback.
 
 ### Phase 2: Voice (MVP)
-- [ ] Speech-to-text and text-to-speech interfaces, plus Deepgram and ElevenLabs implementations
-- [ ] One-page web UI: record button, transcript, audio playback (works on `localhost` without HTTPS)
-- [ ] `POST /sessions/{id}/turn` takes audio and returns audio and the transcript
+- [x] Speech-to-text and text-to-speech interfaces, plus Deepgram and ElevenLabs implementations
+- [x] One-page web UI: record button, transcript, audio playback (works on `localhost` without HTTPS)
+- [x] `POST /sessions/{id}/turn` takes audio and returns audio and the transcript
+- [x] Interview language per interview: English, French or Spanish (interviewer, voice, brief and feedback)
 
 **Check:** a full spoken interview runs locally, at under about 3 s per turn.
 
@@ -206,7 +207,7 @@ The proposal is Deepgram + ElevenLabs. No public per-vendor usage figures exist,
 
 ## Open questions
 
-- [ ] Confirm speech providers for the MVP: Deepgram + ElevenLabs, AWS Transcribe + Polly, or Deepgram for both?
-- [ ] Does Claude write the code for each phase, or guide me while I write it?
-- [ ] Interview languages: English only at first, or French and Spanish from the MVP?
-- [ ] Which languages should the feedback report be in?
+- [x] Confirm speech providers for the MVP: **Deepgram + ElevenLabs** (decided 2026-11-19)
+- [x] Does Claude write the code for each phase, or guide me while I write it? **Claude writes it**, explained for beginners (file headers + HOW_IT_WORKS.md)
+- [x] Interview languages: **English, French and Spanish from the MVP** (decided 2026-11-19)
+- [x] Which languages should the feedback report be in? **The interview's language** (default chosen with the language decision; easy to change in `prompts/final_feedback.md`)

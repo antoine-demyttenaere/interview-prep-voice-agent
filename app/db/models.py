@@ -3,7 +3,8 @@
 Each class is one table and each Mapped[...] attribute one column. Code works with objects
 (`Interview(company=...)`, `db.get(Interview, some_id)`) and SQLAlchemy writes the SQL.
 
-- Interview: one upcoming interview (company, role, mode) and, once you approve it, its brief.
+- Interview: one upcoming interview (company, role, mode, language) and, once you approve it,
+  its brief.
 - Document: a text attached to an interview (job post, email, notes). Your CV has no
   interview_id, so it is shared by all interviews.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
@@ -35,6 +36,7 @@ class Interview(Base):
     interview_date: Mapped[date | None] = mapped_column(Date)
     interviewers: Mapped[list] = mapped_column(JSONB, default=list)
     mode: Mapped[str] = mapped_column(String(40), default="behavioral")
+    language: Mapped[str] = mapped_column(String(5), default="en")  # en | fr | es
     brief: Mapped[dict | None] = mapped_column(JSONB)
     brief_status: Mapped[str] = mapped_column(String(20), default="none")  # none | approved
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

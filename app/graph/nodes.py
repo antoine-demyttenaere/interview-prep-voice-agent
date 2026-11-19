@@ -45,11 +45,16 @@ def _brief_json(state: InterviewState) -> str:
     return json.dumps(state["brief"], indent=2, sort_keys=True, ensure_ascii=False)
 
 
+def _language(state: InterviewState) -> str:
+    return prompts.language_name(state.get("language", "en"))
+
+
 def _interviewer_system(state: InterviewState) -> str:
     return prompts.render(
         "interviewer_system",
         company=state["company"],
         role=state["role"],
+        language=_language(state),
         mode_guidance=prompts.mode_guidance(state["mode"]),
         brief=_brief_json(state),
     )
@@ -79,6 +84,7 @@ def prepare_brief(state: InterviewState) -> dict:
             "prepare_brief",
             company=state["company"],
             role=state["role"],
+            language=_language(state),
             mode_guidance=prompts.mode_guidance(state["mode"]),
         ),
         user=f"{_documents_block(state)}\n\n{revision}".strip(),
@@ -224,6 +230,7 @@ def final_feedback(state: InterviewState) -> dict:
             "final_feedback",
             company=state["company"],
             role=state["role"],
+            language=_language(state),
             mode_guidance=prompts.mode_guidance(state["mode"]),
             brief=_brief_json(state),
             rubric=prompts.rubric_text(state["mode"]),

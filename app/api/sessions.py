@@ -4,29 +4,47 @@
 - GET  /sessions/{id}             what the session is waiting for (or the final feedback)
 - POST /sessions/{id}/resume      sends your reply to the pause: a brief decision or an answer
 - POST /sessions/{id}/retry       re-runs a step that failed (e.g. a Claude error)
+- POST /sessions/{id}/turn        voice: your recorded answer in, the next question as audio out
+- POST /sessions/{id}/speak       voice: the current question as audio (first question, replay)
 
 Each call runs the graph until it pauses again (interrupt()) and returns a "view": status
 (waiting / done / stopped), pending (what it is waiting for), and final_feedback at the end.
 The checkpointer saves the graph's state under thread_id = session id. After each run, _run()
 copies the approved brief and the end time into our own tables.
+
+A voice turn is three steps: speech-to-text (Deepgram) -> the graph (same as a typed answer)
+-> text-to-speech (ElevenLabs) for the next question. It returns the view plus what was heard,
+the audio (base64 text inside the JSON) and the time each step took. The whole turn is one
+LangSmith trace ("voice_turn"); the audio bytes are left out of the trace, only their size is kept.
 """
 
+import base64
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from time import perf_counter
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from langgraph.types import Command
+from langsmith import traceable
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session as DB
 
+from app.config import get_settings
 from app.db.models import Document, Interview, Session
 from app.db.session import get_db
 from app.graph.schemas import InterviewBrief
 from app.llm import LLMError
+from app.voice import SpeechError
+from app.voice.stt import get_stt
+from app.voice.tts import get_tts
 
 router = APIRouter(tags=["sessions"])
+
+AUDIO_DIR = Path(__file__).resolve().parents[2] / "evals" / "audio"
 
 
 class SessionIn(BaseModel):
@@ -81,6 +99,8 @@ def _view(graph, session: Session) -> dict:
         "pending": pending,
         "q_index": values.get("q_index"),
         "total_questions": len(values.get("questions") or []),
+        "language": values.get("language", "en"),
+        "transcript": values.get("transcript") or [],
         "final_feedback": values.get("final_feedback"),
     }
 
@@ -136,6 +156,7 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
         "session_id": str(session.id),
         "interview_id": str(interview.id),
         "mode": interview.mode,
+        "language": interview.language,
         "company": interview.company,
         "role": interview.role,
         "documents": [
@@ -182,3 +203,126 @@ def retry_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_
     if _pending(snapshot) or not snapshot.next:
         raise HTTPException(409, "Nothing to retry: the session is waiting for input or finished")
     return _run(graph, session, None, db)
+
+
+# ---------- voice ----------
+
+def _language(graph, session: Session) -> str:
+    return (graph.get_state(_config(session)).values or {}).get("language", "en")
+
+
+def _waiting_answer(graph, session: Session) -> dict:
+    pending = _pending(graph.get_state(_config(session)))
+    if not pending or pending["type"] != "answer":
+        raise HTTPException(409, "This session is not waiting for an answer to a question")
+    return pending
+
+
+@traceable(
+    run_type="tool",
+    name="speech_to_text",
+    process_inputs=lambda i: {"bytes": len(i["audio"]), "mime_type": i["mime_type"], "language": i["language"]},
+)
+def _transcribe(audio: bytes, mime_type: str, language: str) -> dict:
+    heard = get_stt().transcribe(audio, mime_type, language)
+    return {"text": heard.text, "confidence": heard.confidence}
+
+
+@traceable(
+    run_type="tool",
+    name="text_to_speech",
+    process_outputs=lambda o: {"bytes": len(o["audio"]), "mime_type": o["mime_type"]},
+)
+def _synthesize(text: str, language: str) -> dict:
+    speech = get_tts().synthesize(text, language)
+    return {"audio": speech.audio, "mime_type": speech.mime_type}
+
+
+def _save_recording(session: Session, q_index: int, audio: bytes, mime_type: str) -> None:
+    """With SAVE_AUDIO=true, keep the recording so it can be replayed without speaking."""
+    ext = next((e for e in ("webm", "ogg", "mp4", "wav", "mpeg") if e in mime_type), "bin")
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    (AUDIO_DIR / f"{session.id}_q{q_index + 1}_{stamp}.{ext}").write_bytes(audio)
+
+
+@traceable(
+    name="voice_turn",
+    process_inputs=lambda i: {
+        "session_id": str(i["session"].id),
+        "bytes": len(i["audio"]),
+        "mime_type": i["mime_type"],
+    },
+    process_outputs=lambda o: {k: v for k, v in o.items() if k != "audio"},
+)
+def _voice_turn(graph, session: Session, audio: bytes, mime_type: str, db: DB) -> dict:
+    timings: dict[str, int] = {}
+    start = perf_counter()
+    language = _language(graph, session)
+    pending = _waiting_answer(graph, session)
+    if get_settings().save_audio:
+        _save_recording(session, pending["q_index"], audio, mime_type)
+
+    # 1. What did you say?
+    try:
+        heard = _transcribe(audio, mime_type, language)
+    except SpeechError as exc:
+        raise HTTPException(502, f"Speech-to-text failed: {exc}")
+    timings["speech_to_text"] = round((perf_counter() - start) * 1000)
+    if not heard["text"]:
+        raise HTTPException(422, "No speech recognised. Hold the button while you speak, then try again.")
+
+    # 2. The graph scores the answer and picks the next question (same as a typed answer).
+    t = perf_counter()
+    view = _run(graph, session, Command(resume=heard["text"]), db)
+    timings["interviewer"] = round((perf_counter() - t) * 1000)
+
+    # 3. Say the next question out loud (nothing to say once the feedback is ready).
+    audio_out, audio_error = None, None
+    if view["status"] == "waiting" and view["pending"]["type"] == "answer":
+        t = perf_counter()
+        try:
+            speech = _synthesize(view["pending"]["question"], language)
+            audio_out = {"mime_type": speech["mime_type"], "base64": base64.b64encode(speech["audio"]).decode()}
+        except SpeechError as exc:
+            audio_error = str(exc)  # the interview goes on; the page shows the text instead
+        timings["text_to_speech"] = round((perf_counter() - t) * 1000)
+
+    timings["total"] = round((perf_counter() - start) * 1000)
+    return {
+        **view,
+        "you_said": heard["text"],
+        "stt_confidence": heard["confidence"],
+        "audio": audio_out,
+        "audio_error": audio_error,
+        "timings_ms": timings,
+    }
+
+
+@router.post("/sessions/{session_id}/turn")
+def voice_turn(
+    session_id: uuid.UUID,
+    request: Request,
+    audio: UploadFile = File(..., description="Your recorded answer (webm, ogg, mp4 or wav)"),
+    db: DB = Depends(get_db),
+) -> dict:
+    graph = request.app.state.graph
+    session = _get_session(db, session_id)
+    _waiting_answer(graph, session)
+    data = audio.file.read()
+    if not data:
+        raise HTTPException(422, "The recording is empty")
+    return _voice_turn(graph, session, data, audio.content_type or "", db)
+
+
+@router.post("/sessions/{session_id}/speak", response_class=Response)
+def speak_question(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> Response:
+    """The current question as audio: used for the first question, typed answers and replays."""
+    graph = request.app.state.graph
+    session = _get_session(db, session_id)
+    pending = _waiting_answer(graph, session)
+    try:
+        speech = _synthesize(pending["question"], _language(graph, session))
+    except SpeechError as exc:
+        raise HTTPException(502, f"Text-to-speech failed: {exc}")
+    return Response(content=speech["audio"], media_type=speech["mime_type"])

@@ -5,7 +5,7 @@
 - POST /documents         body DocumentIn; leave interview_id empty for your CV (shared)
 
 InterviewIn and DocumentIn are Pydantic models: FastAPI validates each request against them, and
-the allowed values (Mode, DocType) come from the Literal types. `db` is a database session from
+the allowed values (Mode, DocType, Language) come from the Literal types. `db` is a database session from
 the get_db dependency; db.commit() saves the changes.
 """
 
@@ -24,6 +24,7 @@ router = APIRouter(tags=["interviews"])
 
 Mode = Literal["behavioral", "job_post"]  # technical_backend, system_design: Phase 3
 DocType = Literal["cv", "job_post", "recruiter_email", "notes", "other"]
+Language = Literal["en", "fr", "es"]  # interview, voice, brief and feedback language
 
 
 class InterviewIn(BaseModel):
@@ -32,6 +33,7 @@ class InterviewIn(BaseModel):
     interview_date: date | None = None
     interviewers: list[str] = Field(default_factory=list)
     mode: Mode = "behavioral"
+    language: Language = "en"
 
 
 class DocumentIn(BaseModel):
@@ -49,6 +51,7 @@ def interview_out(i: Interview) -> dict:
         "interview_date": i.interview_date.isoformat() if i.interview_date else None,
         "interviewers": i.interviewers,
         "mode": i.mode,
+        "language": i.language,
         "brief_status": i.brief_status,
         "brief": i.brief,
         "documents": [

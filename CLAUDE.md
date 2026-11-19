@@ -21,6 +21,7 @@ Usually 3-15 lines; a tiny file needs less. Comment syntax:
 - YAML, `.ini`, Dockerfile, `.env*`, `.gitignore`, `.dockerignore`, `requirements.txt`, PowerShell: `#` comments.
 - Mako templates: `##` comments (stripped from the output).
 - Prompt files (`prompts/*.md`): a `<!-- ... -->` block; the loader strips it before sending to Claude, so it can be detailed. Say which node uses it, as system or user prompt, the answer shape and the placeholders.
+- HTML: a `<!-- ... -->` block (before `<!doctype>`); CSS and JavaScript: a `/* ... */` block.
 - Other Markdown: a title and a purpose line are enough.
 - JSON and other formats without comments (e.g. `langgraph.json`): describe the file in HOW_IT_WORKS.md instead.
 - Sample documents (`samples/`): one first line saying they are fictional (the text is sent to Claude).

@@ -16,7 +16,7 @@ The app runs a **mock job interview**, ending with a **scored feedback report**:
 4. Claude plays the interviewer: it asks questions one at a time, scores each answer and asks follow-ups when an answer is vague.
 5. At the end, Claude writes a feskedback report: scores, strengths, and concrete fixes.
 
-Today you type your answers in a terminal (Phase 1). Phase 2 adds voice: you'll speak and the interviewer will talk back.
+You use it from a web page at http://localhost:8000: you hold a button and speak your answer, and the interviewer talks back (Phase 2). The interview can be in English, French or Spanish. You can also type your answers, on the page (switch Voice off) or in a terminal.
 
 ---
 
@@ -24,21 +24,24 @@ Today you type your answers in a terminal (Phase 1). Phase 2 adds voice: you'll 
 
 ```mermaid
 flowchart LR
-  you["You, in a terminal<br/>scripts/interview_cli.py"] -- HTTP --> api["FastAPI server<br/>app/main.py, app/api/"]
+  you["You: web page (web/)<br/>or terminal (scripts/interview_cli.py)"] -- HTTP --> api["FastAPI server<br/>app/main.py, app/api/"]
+  api -- your recording --> stt["Deepgram<br/>speech-to-text"]
   api -- runs --> graph["Interviewer graph<br/>app/graph/ (LangGraph)"]
   graph -- prompts --> claude["Claude<br/>Sonnet 5.5 and Haiku 5.5"]
+  api -- next question --> tts["ElevenLabs<br/>text-to-speech"]
   graph -- saves progress --> db[("Postgres<br/>tables + checkpoints")]
   api -- reads and writes --> db
   claude -. every call recorded .-> ls["LangSmith<br/>traces"]
 ```
 
-- The **CLI** contains no interview logic: it sends HTTP requests to the server and prints the replies.
+- The **web page** and the **CLI** contain no interview logic: they send HTTP requests to the server and show the replies.
+- For a spoken answer, the server sends your recording to **Deepgram**, which turns it into text. The text goes through the graph exactly like a typed answer, and **ElevenLabs** then turns the next question into speech.
 - The **server** (FastAPI) receives each request and runs the **graph** until it needs you again.
 - The **graph** is the interviewer. It is a list of steps. Some steps call Claude; others pause and wait for your input.
 - **Postgres** stores your interviews and documents, plus the graph's progress (called checkpoints), so you can stop and continue later.
 - **LangSmith** records every Claude call, so you can see exactly what was sent and what came back.
 
-Everything except Claude and LangSmith runs on your machine, in two **Docker** containers: `api` (the server) and `db` (Postgres).
+Everything except Claude, Deepgram, ElevenLabs and LangSmith runs on your machine, in two **Docker** containers: `api` (the server) and `db` (Postgres).
 
 ---
 
@@ -57,6 +60,10 @@ Everything except Claude and LangSmith runs on your machine, in two **Docker** c
 | **LangGraph** | A library for building step-by-step AI workflows as a graph. It can save progress (checkpointer) and pause for a human (interrupt). | [app/graph/](app/graph/) |
 | **Claude (Anthropic API)** | The AI model. Sonnet 5.5 for careful work (brief, plan, feedback), Haiku 5.5 for fast turns (asking, scoring). | [app/llm.py](app/llm.py) |
 | **LangSmith** | A tracing service: records every Claude call and graph step so you can inspect and debug them. | [app/llm.py](app/llm.py) (`wrap_anthropic`) |
+| **Deepgram** | Speech-to-text (STT): turns your recorded answer into text. Model `nova-3`, English, French and Spanish. | [app/voice/stt.py](app/voice/stt.py) |
+| **ElevenLabs** | Text-to-speech (TTS): turns the interviewer's words into a natural voice. Model `eleven_flash_v2_5`, built for low latency. | [app/voice/tts.py](app/voice/tts.py) |
+| **httpx** | A Python HTTP client, used to call Deepgram and ElevenLabs. | app/voice/ |
+| **MediaRecorder** | The browser's built-in recorder: it captures the microphone while you hold the button. | [web/app.js](web/app.js) |
 | **pytest** | Runs the automated tests. | [tests/](tests/) |
 
 ---
@@ -78,18 +85,27 @@ app/
     schemas.py         The shapes Claude must answer in (brief, plan, scores, feedback)
     prompts.py         Loads prompts/*.md and rubrics/*.yaml
     checkpointer.py    Saves the graph's progress in Postgres
+  voice/
+    __init__.py        SpeechError, and the supported languages (en, fr, es)
+    stt.py             Speech-to-text: the interface + Deepgram
+    tts.py             Text-to-speech: the interface + ElevenLabs
   db/
     models.py          Tables as Python classes: Interview, Document, Session
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001, 0002
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0003
 prompts/               Every text sent to Claude, one file per step, plus modes/
 rubrics/               Scoring criteria per interview mode (YAML)
 scripts/
   interview_cli.py     The terminal interview (the "client")
   smoke_claude.py      Quick check that the key, models and tracing work
   check-phase0.ps1     Phase 0 check in one command
+web/
+  index.html           The web page: setup, brief review, interview, feedback
+  app.js               Its logic: API calls, push-to-talk recording, audio playback
+  style.css            Its look (follows your light or dark setting)
 samples/               A fictional job post and CV for testing
-tests/                 Tests with a fake Claude (free, no key needed)
+tests/                 Tests with a fake Claude and fake speech providers (free, no keys needed)
+evals/audio/           Your recorded answers, when SAVE_AUDIO=true (never committed)
 docker-compose.yml     The two containers: api and db
 Dockerfile             How the api image is built
 requirements.txt       Python packages
@@ -121,14 +137,16 @@ You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db
 
 ### Step 1: create the interview and add documents
 
+On the web page (http://localhost:8000), fill in the "New interview" form and press **Write my brief**. Or, in a terminal:
+
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
   --doc job_post:samples/job_post.txt --cv samples/cv.txt
 ```
 
-The CLI sends:
+Both send the same requests:
 
-- `POST /interviews` `{"company": "...", "role": "...", "mode": "behavioral"}` → [interviews.py](app/api/interviews.py) `create_interview` adds a row to the `interviews` table.
+- `POST /interviews` `{"company": "...", "role": "...", "mode": "behavioral", "language": "en"}` → [interviews.py](app/api/interviews.py) `create_interview` adds a row to the `interviews` table.
 - `POST /documents` for the CV, with no `interview_id`. Your CV is stored once and shared by all interviews.
 - `POST /documents` for the job post, with the interview's id.
 
@@ -199,7 +217,38 @@ The code enforces the follow-up limit, not Claude, so it holds even if Claude ke
 
 ### Step 6: the final feedback
 
-**`final_feedback`** (Sonnet) gets the whole transcript and every per-answer evaluation, and returns a `FinalFeedback`: an overall score, rubric scores, a comment per question, strengths and fixes. The graph reaches `END`. The API sets `sessions.ended_at` and returns `status: "done"` with the report, and the CLI prints it.
+**`final_feedback`** (Sonnet) gets the whole transcript and every per-answer evaluation, and returns a `FinalFeedback`: an overall score, rubric scores, a comment per question, strengths and fixes. The graph reaches `END`. The API sets `sessions.ended_at` and returns `status: "done"` with the report, which the page or the CLI shows.
+
+### The same turn, spoken
+
+On the web page, steps 5 and 6 happen by voice. After you approve the brief, the page calls `POST /sessions/{id}/speak`, which sends the first question to ElevenLabs and plays the audio. Then, for each answer:
+
+```mermaid
+sequenceDiagram
+  participant B as Browser (app.js)
+  participant A as API (/turn)
+  participant D as Deepgram
+  participant G as Graph + Claude
+  participant E as ElevenLabs
+  B->>B: you hold the button (or Space): MediaRecorder records
+  B->>A: release: POST /sessions/{id}/turn with the audio file
+  A->>D: the recording + language
+  D-->>A: your words as text
+  A->>G: Command(resume=text): evaluate_answer, then ask
+  G-->>A: the next question (text)
+  A->>E: the question + language
+  E-->>A: MP3 audio
+  A-->>B: what you said, next question, audio (base64), timings
+  B->>B: shows the transcript, plays the voice
+```
+
+In [sessions.py](app/api/sessions.py), `_voice_turn` runs these three steps and times each one. The page shows the timings under the transcript, for example `Turn 2.8 s = listening 0.4 s + interviewer 1.9 s + voice 0.5 s`. The Phase 2 target is about 3 s per turn.
+
+- The graph doesn't know whether you typed or spoke: it receives text either way. Voice is a layer around it.
+- The audio comes back inside the JSON as **base64** (binary data written as plain text), so one reply carries the text and the sound together.
+- If Deepgram hears nothing, the API answers 422 and the question stays. If ElevenLabs fails, the interview still moves on and the page shows the question as text.
+- The **language** of the interview (en, fr or es) is passed to Deepgram (what to listen for), to ElevenLabs (how to pronounce), and into the prompts (what Claude writes).
+- With `SAVE_AUDIO=true` in `.env`, every recording is also saved in `evals/audio/`, so voice problems can be replayed later without speaking again.
 
 ---
 
@@ -231,7 +280,7 @@ The state is one dictionary, described in [state.py](app/graph/state.py). Nodes 
 
 | Key | Set by | Meaning |
 | --- | --- | --- |
-| `mode`, `company`, `role`, `documents`, `num_questions` | the API, at start | what this session is about |
+| `mode`, `language`, `company`, `role`, `documents`, `num_questions` | the API, at start | what this session is about |
 | `brief`, `brief_approved`, `brief_feedback` | prepare_brief, review_brief | the brief and your review of it |
 | `questions` | plan_questions | the planned main questions |
 | `q_index`, `followups`, `followup_focus` | plan_questions, evaluate_answer | where we are in the interview |
@@ -246,7 +295,7 @@ The state is one dictionary, described in [state.py](app/graph/state.py). Nodes 
 | prepare_brief, final_feedback | Sonnet 5.5 | high | quality matters, and a 20–40 s wait is fine |
 | plan_questions | Sonnet 5.5 | medium | needs good judgement, but less work |
 | evaluate_answer | Haiku 5.5 | medium | fast, and fair enough to score one answer |
-| ask | Haiku 5.5 | low | you're waiting for it to speak (voice in Phase 2) |
+| ask | Haiku 5.5 | low | you're waiting for it to speak |
 
 *Effort* controls how much Claude thinks before answering: lower is faster and cheaper. You can change the models in `.env` (`MODEL_TURN`, `MODEL_REASONING`).
 
@@ -258,7 +307,7 @@ There are two kinds of tables in the same Postgres database:
 
 | Tables | Owned by | Holds |
 | --- | --- | --- |
-| `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews, pasted texts, the list of sessions, approved briefs |
+| `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), pasted texts, the list of sessions, approved briefs |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
 A session row and its checkpoints are linked by `sessions.thread_id`. Answers and scores are only in the checkpoints for now. The `turns` and `feedback` tables from plan.md will be added when they are needed (Phase 4, for evaluations and thumbs up / down).
@@ -272,6 +321,7 @@ A session row and its checkpoints are linked by `sessions.thread_id`. Answers an
 - **Every text sent to Claude is in [prompts/](prompts/)**, one file per step. The code only fills in the blanks. Each file's header (an HTML comment) says which step uses it and which placeholders it has.
 - **Placeholders** look like `$transcript` and are filled by `prompts.render("ask", transcript=..., directive=...)` ([prompts.py](app/graph/prompts.py)). If a value is missing, it raises an error, so a typo fails loudly instead of sending a broken prompt.
 - **Modes**: [prompts/modes/behavioral.md](prompts/modes/behavioral.md) or [job_post.md](prompts/modes/job_post.md) is inserted as `$mode_guidance`. That's the only difference between interview types, together with the rubric.
+- **Language**: `$language` (English, French or Spanish) is filled into [interviewer_system.md](prompts/interviewer_system.md), [prepare_brief.md](prompts/prepare_brief.md) and [final_feedback.md](prompts/final_feedback.md), so the interview, the brief and the report are all in the interview's language, whatever language the documents are in.
 - **Rubrics**: [rubrics/behavioral.yaml](rubrics/behavioral.yaml) lists the criteria and the 1–5 scale. `rubric_text()` turns the file into text for the prompts.
 - **Files are re-read on every call.** Save a prompt and the next question already uses the new version, without restarting anything. Git keeps each version.
 - **Prompt caching**: [interviewer_system.md](prompts/interviewer_system.md), which includes the brief, is sent unchanged on every turn. Claude caches it, so later turns are cheaper and faster. Anything that changes every turn goes in the user message (`ask.md`, `evaluate_answer.md`), never in the system prompt.
@@ -295,6 +345,8 @@ All calls go through [app/llm.py](app/llm.py):
 - **Stopping mid-interview** (Ctrl+C, closing the terminal, restarting Docker) loses nothing: the state was saved after the last step. `python scripts/interview_cli.py resume SESSION_ID` continues where you stopped.
 - **A failed Claude call** leaves the session at its last checkpoint, with status `stopped`. `POST /sessions/{id}/retry` runs the graph again from there with `graph.invoke(None, config)`, which re-runs the step that failed. The CLI offers this automatically.
 - **A wrong reply** (text when a brief decision is expected, or the reverse) is rejected with `422` before the graph runs, so the session is unaffected.
+- **Speech problems**: if Deepgram fails (`502`) or hears nothing (`422`), the graph isn't touched and you answer the same question again. If ElevenLabs fails, the turn still counts and `audio_error` explains why there is no voice.
+- **Reloading the web page** continues the same session: the page remembers the last session id in your browser.
 
 ---
 
@@ -303,6 +355,8 @@ All calls go through [app/llm.py](app/llm.py):
 Open [smith.langchain.com](https://smith.langchain.com), project **interview-prep-voice-agent**. Each API request that runs the graph shows up as a trace:
 - the graph steps that ran,
 - inside each step, the Claude call: the full prompt, the reply, the tokens used and the time taken.
+
+A spoken turn is one trace named **voice_turn**, with `speech_to_text`, the graph steps and `text_to_speech` inside it, each with its duration. The audio itself is left out of the trace: only its size is kept.
 
 When a question or score looks wrong, this is where you see why. You can copy the prompt into the LangSmith Playground, adjust it, then update the file in `prompts/`.
 
@@ -316,12 +370,14 @@ Privacy: traces contain everything sent to Claude, including your documents and 
 docker compose exec api pytest -q
 ```
 
-[tests/test_graph_flow.py](tests/test_graph_flow.py) replaces Claude with a **fake** that returns fixed answers. It asks for a follow-up whenever an answer contains the word "vague". This makes the tests free, fast and repeatable, and they still use the real prompts, graph, API and Postgres checkpointer. They check:
+[tests/test_graph_flow.py](tests/test_graph_flow.py) and [tests/test_voice_turn.py](tests/test_voice_turn.py) replace Claude with a **fake** that returns fixed answers ([tests/conftest.py](tests/conftest.py)), and Deepgram and ElevenLabs with fakes too. The fake Claude asks for a follow-up whenever an answer contains the word "vague". This makes the tests free, fast and repeatable, and they still use the real prompts, graph, API and Postgres checkpointer. They check:
 - brief revision, then approval;
 - the follow-up cap of 2;
 - that every question is asked and a final feedback is written;
 - that an approved brief is reused;
-- that a session survives an app restart.
+- that a session survives an app restart;
+- that the interview's language reaches the prompts and both speech providers;
+- that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place.
 
 They don't check how good Claude's answers are. That's the job of the evals in Phase 4.
 
@@ -337,7 +393,8 @@ They don't check how good Claude's answers are. That's the job of the evals in P
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
-| run an interview | `python scripts/interview_cli.py new --company "..." --role "..." --doc job_post:path.txt --cv cv.txt` |
+| run a spoken interview | open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) |
+| run a typed interview in a terminal | `python scripts/interview_cli.py new --company "..." --role "..." --doc job_post:path.txt --cv cv.txt` |
 | practice again on an approved brief | `python scripts/interview_cli.py start INTERVIEW_ID` |
 | continue a session | `python scripts/interview_cli.py resume SESSION_ID` |
 | try the API by hand | open http://localhost:8000/docs |
@@ -360,6 +417,17 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 **Change how answers are scored.** Edit the criteria in `rubrics/<mode>.yaml`. No code changes are needed.
 
 **Change a model or a limit.** Set it in `.env` (`MODEL_TURN`, `MODEL_REASONING`, `NUM_QUESTIONS`, `MAX_FOLLOWUPS`), then run `docker compose up -d --force-recreate api`.
+
+**Change the voice.** Pick a voice in your ElevenLabs account, copy its id into `ELEVENLABS_VOICE_ID` in `.env`, then run `docker compose up -d --force-recreate api`. `TTS_MODEL` and `STT_MODEL` switch models the same way.
+
+**Add a speech provider** (e.g. to compare with Deepgram):
+1. Write a class with the same method as the interface: `transcribe(audio, mime_type, language)` in [stt.py](app/voice/stt.py), or `synthesize(text, language)` in [tts.py](app/voice/tts.py).
+2. Return it from `get_stt()` / `get_tts()` when `STT_PROVIDER` / `TTS_PROVIDER` has its name.
+3. Nothing else changes.
+
+**Add a language**:
+1. Add it to `LANGUAGES` in [app/voice/__init__.py](app/voice/__init__.py), to `Language` in [interviews.py](app/api/interviews.py), and to the language lists on the page and in the CLI.
+2. Check that Deepgram's `nova-3` and ElevenLabs' model support it.
 
 **Add an interview mode** (e.g. `technical_backend`, planned for Phase 3):
 1. Add `prompts/modes/technical_backend.md`.
@@ -388,6 +456,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **API / route / endpoint**: a URL the server answers, such as `POST /sessions/{id}/resume`.
 - **Checkpointer**: saves the graph's state after every step, so it can resume later.
 - **Container**: an isolated, reproducible environment that runs one program (here: the server, or Postgres).
+- **Base64**: a way to write binary data (like audio) as plain text, so it fits inside JSON.
 - **Effort**: how much Claude thinks before answering (low, medium or high).
 - **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers (Phase 3).
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
@@ -395,7 +464,9 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **Node**: one step of the graph, written as a Python function.
 - **ORM**: a library (here SQLAlchemy) that maps database rows to Python objects.
 - **Prompt caching**: Claude reuses a prompt prefix it has just seen, so repeated system prompts are cheaper and faster.
+- **Push-to-talk**: you hold a button while you speak and release it when you're done, so the app knows exactly where your answer ends.
 - **Schema (Pydantic)**: a Python class describing the exact shape data must have.
+- **Speech-to-text (STT)** / **text-to-speech (TTS)**: turning a recording into text, and text into a voice.
 - **State**: the dictionary the graph carries from step to step.
 - **Structured output**: Claude answers as JSON that is guaranteed to match a schema.
 - **Thread id**: the label under which one session's checkpoints are saved (here: the session id).
@@ -408,8 +479,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | Phase | Status |
 | --- | --- |
 | 0. Skeleton: Docker, FastAPI, Postgres + pgvector, migrations, traced Claude call | done |
-| 1. Typed interview with brief review, Postgres checkpointer, prompts and rubrics in files | built and tested with a fake Claude; real-Claude check in progress |
-| 2. Voice: speech-to-text, text-to-speech, one-page web UI | next |
+| 1. Typed interview with brief review, Postgres checkpointer, prompts and rubrics in files | built; brief tested with real Claude, the full typed check is yours to run |
+| 2. Voice: speech-to-text, text-to-speech, one-page web UI, English / French / Spanish | built and tested with fake providers; the spoken check (under ~3 s per turn) needs the Deepgram and ElevenLabs keys |
 | 3. File uploads, pgvector search, technical and system design modes | planned |
 | 4. Evals in LangSmith | planned |
 | 5. AWS with Terraform | planned |

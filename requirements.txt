@@ -1,6 +1,8 @@
 # requirements.txt - the Python packages the app needs, installed by the Dockerfile (pip install -r).
 #
-# Web: fastapi (the API framework), uvicorn (the server that runs it), pydantic-settings (reads .env).
+# Web: fastapi (the API framework), uvicorn (the server that runs it), pydantic-settings (reads .env),
+#   python-multipart (lets FastAPI receive uploaded audio files).
+# Speech: httpx (HTTP client used to call Deepgram and ElevenLabs).
 # Database: sqlalchemy (Python objects <-> SQL), psycopg + psycopg-pool (Postgres driver and
 #   connection pool), alembic (table migrations), pgvector (vector column type, used from Phase 3).
 # AI: anthropic (Claude API), langsmith (tracing), langgraph + its Postgres checkpointer
@@ -10,6 +12,8 @@
 fastapi>=0.115
 uvicorn[standard]>=0.32
 pydantic-settings>=2.6
+python-multipart>=0.0.18
+httpx>=0.27
 sqlalchemy>=2.0.36
 psycopg[binary]>=3.2
 psycopg-pool>=3.2

@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     tts_output_format: str = "mp3_44100_64"
     save_audio: bool = False  # keep each recorded answer in evals/audio/ for replay tests
 
+    # Documents search (Phase 3). Embeddings sit behind an interface in app/rag/embeddings.py.
+    embedding_provider: str = "voyage"
+    voyage_api_key: str = ""
+    embedding_model: str = "voyage-4"  # 1024 numbers per text, multilingual
+    retrieval_k: int = 3  # document passages added to each question
+
     @property
     def psycopg_url(self) -> str:
         """Plain libpq URL (no SQLAlchemy driver suffix) for psycopg / the checkpointer."""

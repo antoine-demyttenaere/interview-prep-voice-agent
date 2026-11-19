@@ -34,6 +34,9 @@ class PlannedQuestion(BaseModel):
     text: str = Field(description="The question as the interviewer would ask it")
     topic: str = Field(description="Short topic label, e.g. 'conflict', 'ownership', 'role fit'")
     rationale: str = Field(description="Why this question, linked to the brief")
+    based_on: str = Field(
+        description="Where it comes from: the brief item, document or question-bank entry it is based on"
+    )
 
 
 class QuestionPlan(BaseModel):

@@ -10,6 +10,8 @@ How it works:
 - Typed answers (Voice switched off) go to POST /sessions/{id}/resume, like the terminal CLI.
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
+- Uploaded files go to POST /documents/upload; under each question the page shows which of your
+  documents the interviewer drew on ("Based on: ...").
 */
 
 const $ = (id) => document.getElementById(id);
@@ -163,7 +165,8 @@ function renderTranscript(turns) {
   $("transcript").replaceChildren(
     ...turns.map((t) =>
       el("div", { class: `line ${t.role}` },
-        el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You"), t.text)),
+        el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You"), t.text,
+        t.sources && t.sources.length ? el("span", { class: "sources" }, `Based on: ${t.sources.join(", ")}`) : "")),
   );
   $("transcript").lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -215,7 +218,11 @@ $("setup-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   const job = f.get("job_post").trim(), notes = f.get("notes").trim(), cv = f.get("cv").trim();
-  if (!job && !notes && !cv) return showError("Paste at least one document: the job post, notes or your CV.");
+  const files = f.getAll("files").filter((file) => file.size), cvFile = f.get("cv_file");
+  const hasCvFile = cvFile && cvFile.size;
+  if (!job && !notes && !cv && !files.length && !hasCvFile) {
+    return showError("Add at least one document: the job post, notes, a file or your CV.");
+  }
 
   run("Reading your documents and writing the brief (about 30 s)...", async () => {
     const interview = await api("POST", "/interviews", {
@@ -224,6 +231,16 @@ $("setup-form").addEventListener("submit", (e) => {
     if (cv) await api("POST", "/documents", { doc_type: "cv", source: "pasted CV", text: cv });
     if (job) await api("POST", "/documents", { interview_id: interview.id, doc_type: "job_post", source: "pasted job post", text: job });
     if (notes) await api("POST", "/documents", { interview_id: interview.id, doc_type: "notes", source: "pasted notes", text: notes });
+    // Files are read on the server (PDF, Word, .eml), then cut into chunks and embedded.
+    const upload = async (file, fields) => {
+      const form = new FormData();
+      form.append("file", file);
+      Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+      const doc = await api("POST", "/documents/upload", form, true);
+      if (doc.embedding_error) showError(`${file.name} was saved but not indexed: ${doc.embedding_error}`);
+    };
+    if (hasCvFile) await upload(cvFile, { doc_type: "cv" });
+    for (const file of files) await upload(file, { interview_id: interview.id });
     const questions = Number(f.get("questions")) || null;
     render(await api("POST", `/interviews/${interview.id}/sessions`, { num_questions: questions }));
   });

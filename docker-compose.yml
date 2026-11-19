@@ -4,7 +4,8 @@
 #   LangGraph checkpoints (saved interview progress). Data lives in the "pgdata" volume, so it
 #   survives restarts (`docker compose down -v` deletes it).
 # - api: the FastAPI app, built from the Dockerfile. On start it applies the database migrations
-#   (alembic upgrade head), then serves http://localhost:8000 (API docs at /docs).
+#   (alembic upgrade head), syncs the question bank (scripts/seed_question_bank.py; a failure
+#   there does not block the start), then serves http://localhost:8000 (API docs at /docs).
 #   Your project folder is mounted into the container and uvicorn --reload restarts the server
 #   when a file in app/ or prompts/ changes, so code changes need no rebuild.
 #   Rebuild (`docker compose up -d --build`) only after changing requirements.txt or the Dockerfile.
@@ -41,6 +42,7 @@ services:
       WATCHFILES_FORCE_POLLING: "true"
     command: >
       sh -c "alembic upgrade head &&
+             (python scripts/seed_question_bank.py || echo 'Question bank not seeded, starting anyway') &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-dir prompts"
     ports:
       - "8000:8000"

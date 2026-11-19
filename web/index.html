@@ -4,7 +4,7 @@ index.html - the one web page of the app: set up an interview, review the brief,
 Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the web/ folder).
 The page only shows things and sends requests to the API; app.js holds the logic and
 style.css the look. There are four panels, and app.js shows one at a time:
-  1. setup     - describe the interview, paste the documents, or continue an earlier session
+  1. setup     - describe the interview, paste or upload the documents, or continue a session
   2. brief     - read the Interview Brief, approve it or ask for changes
   3. interview - hold the button (or Space) to answer out loud, or switch to typing
   4. feedback  - the final scored report
@@ -41,6 +41,8 @@ No build step and no framework: edit a file, reload the page.
             <select name="mode">
               <option value="behavioral">Behavioral / HR</option>
               <option value="job_post">Tailored to the job post</option>
+              <option value="technical_backend">Technical backend</option>
+              <option value="system_design">System design</option>
             </select>
           </label>
           <label>Language
@@ -55,8 +57,11 @@ No build step and no framework: edit a file, reload the page.
         <label>Job post <textarea name="job_post" rows="6" placeholder="Paste the job post"></textarea></label>
         <label>Recruiter emails or notes <span class="muted">(optional)</span>
           <textarea name="notes" rows="4" placeholder="Paste emails, notes from a call..."></textarea></label>
+        <label>Files <span class="muted">(optional: job post, emails, notes as PDF, Word, .eml or text)</span>
+          <input type="file" name="files" multiple accept=".pdf,.docx,.eml,.txt,.md"></label>
         <label>Your CV <span class="muted">(optional; stored once and used for every interview)</span>
           <textarea name="cv" rows="4" placeholder="Paste your CV as text, or leave empty if already added"></textarea></label>
+        <label>Or your CV as a file <input type="file" name="cv_file" accept=".pdf,.docx,.txt,.md"></label>
         <button type="submit" class="primary">Write my brief</button>
       </form>
 

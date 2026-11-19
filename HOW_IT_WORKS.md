@@ -10,10 +10,11 @@ The goals, the phases and the decisions behind them are in [plan.md](plan.md). T
 
 The app runs a **mock job interview**, ending with a **scored feedback report**:
 
-1. You describe an upcoming interview (company, role) and paste in documents: the job post, recruiter emails, call notes, your CV.
+1. You describe an upcoming interview (company, role, interview type, language) and add documents, pasted or as files (PDF, Word, .eml emails): the job post, recruiter emails, call notes, your CV.
 2. Claude reads them and writes an **Interview Brief**: what the company does, what the role needs, who the interviewers are, the gaps between your CV and the role, and the questions you're likely to get.
 3. You review the brief and approve it, edit it, or ask for changes.
-4. Claude plays the interviewer: it asks questions one at a time, scores each answer and asks follow-ups when an answer is vague.
+4. Claude plays the interviewer: it asks questions one at a time, scores each answer and asks follow-ups when an answer is vague. Before each question it searches your documents for the passages that matter, so questions refer to your real CV and the real role.
+   There are four interview types: behavioral / HR, tailored to the job post, technical backend, and system design. The two technical ones start from a bank of seeded questions.
 5. At the end, Claude writes a feskedback report: scores, strengths, and concrete fixes.
 
 You use it from a web page at http://localhost:8000: you hold a button and speak your answer, and the interviewer talks back (Phase 2). The interview can be in English, French or Spanish. You can also type your answers, on the page (switch Voice off) or in a terminal.
@@ -29,7 +30,8 @@ flowchart LR
   api -- runs --> graph["Interviewer graph<br/>app/graph/ (LangGraph)"]
   graph -- prompts --> claude["Claude<br/>Sonnet 5.5 and Haiku 5.5"]
   api -- next question --> tts["ElevenLabs<br/>text-to-speech"]
-  graph -- saves progress --> db[("Postgres<br/>tables + checkpoints")]
+  graph -- saves progress --> db[("Postgres + pgvector<br/>tables, chunks, checkpoints")]
+  api -- documents and questions --> voy["Voyage AI<br/>embeddings"]
   api -- reads and writes --> db
   claude -. every call recorded .-> ls["LangSmith<br/>traces"]
 ```
@@ -39,9 +41,10 @@ flowchart LR
 - The **server** (FastAPI) receives each request and runs the **graph** until it needs you again.
 - The **graph** is the interviewer. It is a list of steps. Some steps call Claude; others pause and wait for your input.
 - **Postgres** stores your interviews and documents, plus the graph's progress (called checkpoints), so you can stop and continue later.
+- **Voyage AI** turns each piece of a document, and each search, into an embedding. **pgvector** (inside Postgres) finds the pieces closest to a question.
 - **LangSmith** records every Claude call, so you can see exactly what was sent and what came back.
 
-Everything except Claude, Deepgram, ElevenLabs and LangSmith runs on your machine, in two **Docker** containers: `api` (the server) and `db` (Postgres).
+Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on your machine, in two **Docker** containers: `api` (the server) and `db` (Postgres).
 
 ---
 
@@ -54,7 +57,9 @@ Everything except Claude, Deepgram, ElevenLabs and LangSmith runs on your machin
 | **Uvicorn** | The web server that runs the FastAPI app. `--reload` restarts it when code changes. | started by docker-compose.yml |
 | **Pydantic** | Describes the shape of data with Python classes and validates it ("this field must be text"). | request bodies, Claude's answers ([schemas.py](app/graph/schemas.py)), settings |
 | **PostgreSQL** | The database. | the `db` container |
-| **pgvector** | A Postgres extension for storing embeddings (lists of numbers that capture what a text means) and searching by similarity. Enabled now, used from Phase 3. | [migration 0001](app/db/migrations/versions/0001_enable_pgvector.py) |
+| **pgvector** | A Postgres extension for storing embeddings (lists of numbers that capture what a text means) and finding the closest ones. | [migration 0004](app/db/migrations/versions/0004_chunks_and_question_bank.py), [retrieve.py](app/rag/retrieve.py) |
+| **Voyage AI** | Turns a text into an embedding of 1024 numbers (model `voyage-4`). Anthropic has no embedding model and recommends Voyage. | [app/rag/embeddings.py](app/rag/embeddings.py) |
+| **pypdf, python-docx** | Read the text out of PDF and Word files. Emails (.eml) are read with Python's own `email` library. | [app/rag/parsers.py](app/rag/parsers.py) |
 | **SQLAlchemy** | Lets Python code work with database rows as objects instead of writing SQL. | [app/db/models.py](app/db/models.py) |
 | **Alembic** | Creates and changes database tables through numbered "migration" files, and tracks which ones have already run. | [app/db/migrations/](app/db/migrations/) |
 | **LangGraph** | A library for building step-by-step AI workflows as a graph. It can save progress (checkpointer) and pause for a human (interrupt). | [app/graph/](app/graph/) |
@@ -76,7 +81,7 @@ app/
   config.py            Settings read from .env (models, limits, database URL)
   llm.py               The only place that calls Claude: structured() and text_reply()
   api/
-    interviews.py      POST /interviews, GET /interviews/{id}, POST /documents
+    interviews.py      Interviews, and documents: paste, upload, list the CV, delete
     sessions.py        Start a session, resume it with your reply, retry a failed step
   graph/               The interviewer (LangGraph)
     state.py           What the graph remembers (the "state")
@@ -89,22 +94,32 @@ app/
     __init__.py        SpeechError, and the supported languages (en, fr, es)
     stt.py             Speech-to-text: the interface + Deepgram
     tts.py             Text-to-speech: the interface + ElevenLabs
+  rag/                 Searching your documents (retrieval-augmented generation)
+    parsers.py         PDF, Word, .eml and text files -> text
+    chunking.py        Text -> chunks of a few paragraphs
+    embeddings.py      The embedding interface + Voyage AI
+    ingest.py          Document -> chunks -> embeddings -> chunks table
+    retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Session
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0003
-prompts/               Every text sent to Claude, one file per step, plus modes/
-rubrics/               Scoring criteria per interview mode (YAML)
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0004
+prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
+rubrics/               Scoring criteria per interview type (YAML)
+question_bank/         Seeded questions for the technical backend and system design types (YAML)
 scripts/
   interview_cli.py     The terminal interview (the "client")
   smoke_claude.py      Quick check that the key, models and tracing work
+  seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
+  embed_documents.py   Embeds documents that have no chunks yet
   check-phase0.ps1     Phase 0 check in one command
 web/
   index.html           The web page: setup, brief review, interview, feedback
   app.js               Its logic: API calls, push-to-talk recording, audio playback
   style.css            Its look (follows your light or dark setting)
 samples/               A fictional job post and CV for testing
-tests/                 Tests with a fake Claude and fake speech providers (free, no keys needed)
+my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
+tests/                 Tests with a fake Claude, fake speech and a fake embedder, on their own database
 evals/audio/           Your recorded answers, when SAVE_AUDIO=true (never committed)
 docker-compose.yml     The two containers: api and db
 Dockerfile             How the api image is built
@@ -130,14 +145,14 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 and 0002). It then starts uvicorn on port 8000.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0004). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
 
 ### Step 1: create the interview and add documents
 
-On the web page (http://localhost:8000), fill in the "New interview" form and press **Write my brief**. Or, in a terminal:
+On the web page (http://localhost:8000), fill in the "New interview" form (paste texts and/or pick files) and press **Write my brief**. Or, in a terminal (any of the paths can be a PDF, Word, .eml or text file):
 
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
@@ -147,8 +162,27 @@ python scripts/interview_cli.py new --company "Northwind Logistics" --role "Seni
 Both send the same requests:
 
 - `POST /interviews` `{"company": "...", "role": "...", "mode": "behavioral", "language": "en"}` → [interviews.py](app/api/interviews.py) `create_interview` adds a row to the `interviews` table.
-- `POST /documents` for the CV, with no `interview_id`. Your CV is stored once and shared by all interviews.
-- `POST /documents` for the job post, with the interview's id.
+- `POST /documents` (pasted text) or `POST /documents/upload` (a file) for the CV, with no `interview_id`. Your CV is stored once and shared by all interviews.
+- The same for the job post and any emails or notes, with the interview's id.
+
+### Step 1b: your documents become searchable
+
+Each new document is **ingested** right after it is saved ([ingest.py](app/rag/ingest.py)):
+
+```mermaid
+flowchart LR
+  file["PDF / Word / .eml / text"] -- parsers.py --> text["plain text<br/>(documents.raw_text)"]
+  text -- chunking.py --> chunks["chunks of ~200 words"]
+  chunks -- "Voyage (as 'document')" --> vec["1024 numbers each"]
+  vec --> table[("chunks table<br/>+ HNSW index")]
+```
+
+1. [parsers.py](app/rag/parsers.py) extracts the text. A scanned PDF (images only) has no text and is refused with a clear message; email attachments are ignored.
+2. [chunking.py](app/rag/chunking.py) cuts it into chunks of a few paragraphs (up to 1,200 characters), each starting with the end of the previous one, so no sentence is lost at a boundary.
+3. [embeddings.py](app/rag/embeddings.py) sends all chunks to Voyage in one request and gets an **embedding** for each: 1024 numbers that place the text in a "meaning space", where texts about the same thing are close together.
+4. The chunks and their embeddings go into the `chunks` table, tagged with the interview, document type and file name.
+
+The reply says how many chunks were made. If Voyage fails, the document is still saved, the reply has an `embedding_error`, and `scripts/embed_documents.py` can index it later. The whole document text is still what Sonnet reads for the brief; chunks are for the searches during the interview.
 
 ### Step 2: start a session, and the brief is written
 
@@ -194,7 +228,9 @@ After the run, `_run()` copies the approved brief into the `interviews` table (`
 
 ### Step 4: the questions are planned
 
-**`plan_questions`** (Sonnet) uses [prompts/interviewer_system.md](prompts/interviewer_system.md) as the system prompt, which contains the brief, and [prompts/plan_questions.md](prompts/plan_questions.md) with the rubric. It returns a `QuestionPlan` with 5 questions (the `NUM_QUESTIONS` setting). It also resets the counters: `q_index = 0`, `followups = 0`, an empty transcript.
+**`plan_questions`** (Sonnet) uses [prompts/interviewer_system.md](prompts/interviewer_system.md) as the system prompt, which contains the brief, and [prompts/plan_questions.md](prompts/plan_questions.md) with the rubric. It returns a `QuestionPlan` with 5 questions (the `NUM_QUESTIONS` setting), each with a `based_on` field saying what it comes from. It also resets the counters: `q_index = 0`, `followups = 0`, an empty transcript.
+
+In the **technical backend** and **system design** types (their rubric has `uses_question_bank: true`), it first searches the question bank with the brief's focus areas and role requirements (`search_question_bank`), and gives Claude the closest seeded questions to use, adapt or ignore.
 
 ### Step 5: the question and answer loop
 
@@ -206,10 +242,10 @@ flowchart LR
   evaluate_answer -- "all questions done" --> final_feedback
 ```
 
-- **`ask`** (Haiku) fills [prompts/ask.md](prompts/ask.md) with the transcript so far, plus a directive: [ask_question.md](prompts/ask_question.md) for a new question, or [ask_followup.md](prompts/ask_followup.md) for a follow-up. Haiku writes what the interviewer says, in natural spoken words, and the line is added to the transcript.
+- **`ask`** first **searches your documents** (`retrieve.search_documents`): the planned question (or the follow-up's focus) is embedded as a "query", and Postgres returns the 3 closest chunks of this interview's documents and your CV (`RETRIEVAL_K`). Then Haiku gets [prompts/ask.md](prompts/ask.md) with the transcript so far, those passages, and a directive: [ask_question.md](prompts/ask_question.md) for a new question, or [ask_followup.md](prompts/ask_followup.md) for a follow-up. Haiku writes what the interviewer says, in natural spoken words, and can use a detail from a passage ("you mentioned the RabbitMQ migration..."). The line is added to the transcript with `sources`: the files the passages came from. The web page shows them under the question ("Based on: cv.pdf, job_post.txt").
 - **`answer`** pauses with `interrupt({"type": "answer", "question": ...})`. The CLI shows the question and you type your answer. The CLI then sends `POST /sessions/{id}/resume` with `{"value": "your answer"}`, and the answer is added to the transcript.
 - **`evaluate_answer`** (Haiku) fills [prompts/evaluate_answer.md](prompts/evaluate_answer.md) with the rubric and this question's exchange, and returns an `AnswerEvaluation`: a score per criterion, an overall score, a summary, and whether to follow up and on what.
-  - If Claude wants a follow-up **and** fewer than 2 have been asked on this question (`MAX_FOLLOWUPS`), the node sets `followup_focus` and the graph goes back to `ask`.
+  - If Claude wants a follow-up **and** fewer than 2 have been asked on this question (`MAX_FOLLOWUPS`; 3 in system design, set by `max_followups` in its rubric), the node sets `followup_focus` and the graph goes back to `ask`.
   - Otherwise it moves to the next question (`q_index + 1`, `followups = 0`).
 - **`route_after_evaluate`** picks the next step: `ask` again, or `final_feedback` once `q_index` has gone past the last question.
 
@@ -284,7 +320,7 @@ The state is one dictionary, described in [state.py](app/graph/state.py). Nodes 
 | `brief`, `brief_approved`, `brief_feedback` | prepare_brief, review_brief | the brief and your review of it |
 | `questions` | plan_questions | the planned main questions |
 | `q_index`, `followups`, `followup_focus` | plan_questions, evaluate_answer | where we are in the interview |
-| `current_question`, `transcript` | ask, answer | the conversation so far |
+| `current_question`, `transcript` | ask, answer | the conversation so far; interviewer lines also carry `sources` |
 | `evaluations` | evaluate_answer | one score record per answer |
 | `final_feedback` | final_feedback | the report |
 
@@ -307,10 +343,15 @@ There are two kinds of tables in the same Postgres database:
 
 | Tables | Owned by | Holds |
 | --- | --- | --- |
-| `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), pasted texts, the list of sessions, approved briefs |
+| `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
+| `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
 A session row and its checkpoints are linked by `sessions.thread_id`. Answers and scores are only in the checkpoints for now. The `turns` and `feedback` tables from plan.md will be added when they are needed (Phase 4, for evaluations and thumbs up / down).
+
+**Searching by meaning**, in short: `search_documents` asks Postgres for the chunks with the smallest **cosine distance** to the query's embedding (`ORDER BY embedding <=> query`). Distance 0 means the same meaning; the similarity shown in traces is 1 minus the distance. Without an index Postgres would compare the query with every row; the **HNSW** index is a graph of neighbouring vectors that finds the closest ones quickly.
+
+**Tests use their own database**, `interview_test`, created automatically, so test interviews never mix with yours.
 
 **Migrations**, in short: when a table changes, you don't edit the database by hand. You add a numbered file in `app/db/migrations/versions/` with an `upgrade()` (apply the change) and a `downgrade()` (undo it). Alembic remembers which migrations have run, and `alembic upgrade head` applies the new ones. The container runs it on every start.
 
@@ -320,9 +361,10 @@ A session row and its checkpoints are linked by `sessions.thread_id`. Answers an
 
 - **Every text sent to Claude is in [prompts/](prompts/)**, one file per step. The code only fills in the blanks. Each file's header (an HTML comment) says which step uses it and which placeholders it has.
 - **Placeholders** look like `$transcript` and are filled by `prompts.render("ask", transcript=..., directive=...)` ([prompts.py](app/graph/prompts.py)). If a value is missing, it raises an error, so a typo fails loudly instead of sending a broken prompt.
-- **Modes**: [prompts/modes/behavioral.md](prompts/modes/behavioral.md) or [job_post.md](prompts/modes/job_post.md) is inserted as `$mode_guidance`. That's the only difference between interview types, together with the rubric.
+- **Interview types (modes)**: one of [behavioral.md](prompts/modes/behavioral.md), [job_post.md](prompts/modes/job_post.md), [technical_backend.md](prompts/modes/technical_backend.md) or [system_design.md](prompts/modes/system_design.md) is inserted as `$mode_guidance`. Together with the rubric (and, for the technical ones, the question bank), that's the only difference between interview types.
+- **Retrieved passages** are inserted as `$context` in [ask.md](prompts/ask.md), and seeded questions as `$bank_questions` in [plan_questions.md](prompts/plan_questions.md). Both change every call, so they are in the user message, never in the cached system prompt.
 - **Language**: `$language` (English, French or Spanish) is filled into [interviewer_system.md](prompts/interviewer_system.md), [prepare_brief.md](prompts/prepare_brief.md) and [final_feedback.md](prompts/final_feedback.md), so the interview, the brief and the report are all in the interview's language, whatever language the documents are in.
-- **Rubrics**: [rubrics/behavioral.yaml](rubrics/behavioral.yaml) lists the criteria and the 1–5 scale. `rubric_text()` turns the file into text for the prompts.
+- **Rubrics**: [rubrics/behavioral.yaml](rubrics/behavioral.yaml) lists the criteria and the 1–5 scale. `rubric_text()` turns the file into text for the prompts. A rubric can also set `uses_question_bank: true` and `max_followups`.
 - **Files are re-read on every call.** Save a prompt and the next question already uses the new version, without restarting anything. Git keeps each version.
 - **Prompt caching**: [interviewer_system.md](prompts/interviewer_system.md), which includes the brief, is sent unchanged on every turn. Claude caches it, so later turns are cheaper and faster. Anything that changes every turn goes in the user message (`ask.md`, `evaluate_answer.md`), never in the system prompt.
 
@@ -347,6 +389,7 @@ All calls go through [app/llm.py](app/llm.py):
 - **A wrong reply** (text when a brief decision is expected, or the reverse) is rejected with `422` before the graph runs, so the session is unaffected.
 - **Speech problems**: if Deepgram fails (`502`) or hears nothing (`422`), the graph isn't touched and you answer the same question again. If ElevenLabs fails, the turn still counts and `audio_error` explains why there is no voice.
 - **Reloading the web page** continues the same session: the page remembers the last session id in your browser.
+- **Voyage problems**: a search that fails (no key, network, rate limit) is skipped with a warning in the logs: the question is asked without passages, the interview doesn't stop. Document embedding retries for about a minute on a rate limit (`429`), then reports `embedding_error`. A Voyage account **without a payment method is limited to 3 requests per minute**, which a fast interview can exceed; adding a payment method raises it (the first 200M tokens stay free).
 
 ---
 
@@ -355,6 +398,8 @@ All calls go through [app/llm.py](app/llm.py):
 Open [smith.langchain.com](https://smith.langchain.com), project **interview-prep-voice-agent**. Each API request that runs the graph shows up as a trace:
 - the graph steps that ran,
 - inside each step, the Claude call: the full prompt, the reply, the tokens used and the time taken.
+
+Every search appears as a **retriever** step (`search_documents`, `search_question_bank`) inside the graph step that made it: LangSmith lists the passages found, with their `source` (the file), `doc_type` and `similarity`. That is how a trace shows which document each question came from.
 
 A spoken turn is one trace named **voice_turn**, with `speech_to_text`, the graph steps and `text_to_speech` inside it, each with its duration. The audio itself is left out of the trace: only its size is kept.
 
@@ -370,14 +415,17 @@ Privacy: traces contain everything sent to Claude, including your documents and 
 docker compose exec api pytest -q
 ```
 
-[tests/test_graph_flow.py](tests/test_graph_flow.py) and [tests/test_voice_turn.py](tests/test_voice_turn.py) replace Claude with a **fake** that returns fixed answers ([tests/conftest.py](tests/conftest.py)), and Deepgram and ElevenLabs with fakes too. The fake Claude asks for a follow-up whenever an answer contains the word "vague". This makes the tests free, fast and repeatable, and they still use the real prompts, graph, API and Postgres checkpointer. They check:
+[tests/test_graph_flow.py](tests/test_graph_flow.py), [tests/test_voice_turn.py](tests/test_voice_turn.py) and [tests/test_rag.py](tests/test_rag.py) replace Claude with a **fake** that returns fixed answers ([tests/conftest.py](tests/conftest.py)), and Deepgram, ElevenLabs and Voyage with fakes too. The fake embedder builds vectors from the words of a text, so texts sharing words are close: enough to test search without calling Voyage. Tests run on their own database (`interview_test`). The fake Claude asks for a follow-up whenever an answer contains the word "vague". This makes the tests free, fast and repeatable, and they still use the real prompts, graph, API and Postgres checkpointer. They check:
 - brief revision, then approval;
 - the follow-up cap of 2;
 - that every question is asked and a final feedback is written;
 - that an approved brief is reused;
 - that a session survives an app restart;
 - that the interview's language reaches the prompts and both speech providers;
-- that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place.
+- that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
+- that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
+- that the interviewer's prompt receives the matching passages and the transcript records their source;
+- that the technical types use the question bank and that system design allows 3 follow-ups.
 
 They don't check how good Claude's answers are. That's the job of the evals in Phase 4.
 
@@ -394,7 +442,10 @@ They don't check how good Claude's answers are. That's the job of the evals in P
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
 | run a spoken interview | open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) |
-| run a typed interview in a terminal | `python scripts/interview_cli.py new --company "..." --role "..." --doc job_post:path.txt --cv cv.txt` |
+| run a typed interview in a terminal | `python scripts/interview_cli.py new --company "..." --role "..." --mode technical_backend --doc job_post:post.pdf --doc recruiter_email:mail.eml --cv cv.pdf` |
+| index documents added before Phase 3 (or when Voyage failed) | `docker compose exec api python scripts/embed_documents.py` |
+| reload the question bank after editing question_bank/ | `docker compose exec api python scripts/seed_question_bank.py` (also runs on every start) |
+| see or remove your stored CV | `GET /documents/cv`, then `DELETE /documents/{id}` (from http://localhost:8000/docs) |
 | practice again on an approved brief | `python scripts/interview_cli.py start INTERVIEW_ID` |
 | continue a session | `python scripts/interview_cli.py resume SESSION_ID` |
 | try the API by hand | open http://localhost:8000/docs |
@@ -429,10 +480,14 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 1. Add it to `LANGUAGES` in [app/voice/__init__.py](app/voice/__init__.py), to `Language` in [interviews.py](app/api/interviews.py), and to the language lists on the page and in the CLI.
 2. Check that Deepgram's `nova-3` and ElevenLabs' model support it.
 
-**Add an interview mode** (e.g. `technical_backend`, planned for Phase 3):
-1. Add `prompts/modes/technical_backend.md`.
-2. Add `rubrics/technical_backend.yaml`.
-3. Add the name to `Mode` in [app/api/interviews.py](app/api/interviews.py), and to `--mode` in the CLI.
+**Add questions to the bank.** Add entries (topic, difficulty, text) to `question_bank/technical_backend.yaml` or `system_design.yaml`, then run `docker compose exec api python scripts/seed_question_bank.py`. Only the new questions are embedded.
+
+**Tune the search.** `RETRIEVAL_K` in `.env` sets how many passages each question gets. Chunk size is `max_chars` in [chunking.py](app/rag/chunking.py); after changing it, run `scripts/embed_documents.py --all`.
+
+**Add an interview mode** (e.g. `product_sense`):
+1. Add `prompts/modes/product_sense.md`.
+2. Add `rubrics/product_sense.yaml` (add `uses_question_bank: true` and a `question_bank/product_sense.yaml` if it should start from seeded questions).
+3. Add the name to `Mode` in [app/api/interviews.py](app/api/interviews.py), to the select on the web page ([index.html](web/index.html)), and to `--mode` in the CLI.
 
 **Add a column or table:**
 1. Change [app/db/models.py](app/db/models.py).
@@ -458,12 +513,16 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **Container**: an isolated, reproducible environment that runs one program (here: the server, or Postgres).
 - **Base64**: a way to write binary data (like audio) as plain text, so it fits inside JSON.
 - **Effort**: how much Claude thinks before answering (low, medium or high).
-- **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers (Phase 3).
+- **Chunk**: a piece of a document (a few paragraphs) that is embedded and searched on its own.
+- **Cosine distance / similarity**: how far apart two embeddings point; similarity 1 means the same meaning, 0 unrelated.
+- **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers.
+- **HNSW index**: a search index that links each vector to its neighbours, so the closest vectors are found without checking every row.
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
 - **Migration**: a numbered script that changes the database's tables in a controlled way.
 - **Node**: one step of the graph, written as a Python function.
 - **ORM**: a library (here SQLAlchemy) that maps database rows to Python objects.
 - **Prompt caching**: Claude reuses a prompt prefix it has just seen, so repeated system prompts are cheaper and faster.
+- **RAG (retrieval-augmented generation)**: searching your own documents for the relevant passages and adding them to the prompt, instead of sending everything every time.
 - **Push-to-talk**: you hold a button while you speak and release it when you're done, so the app knows exactly where your answer ends.
 - **Schema (Pydantic)**: a Python class describing the exact shape data must have.
 - **Speech-to-text (STT)** / **text-to-speech (TTS)**: turning a recording into text, and text into a voice.
@@ -481,7 +540,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 0. Skeleton: Docker, FastAPI, Postgres + pgvector, migrations, traced Claude call | done |
 | 1. Typed interview with brief review, Postgres checkpointer, prompts and rubrics in files | built; brief tested with real Claude, the full typed check is yours to run |
 | 2. Voice: speech-to-text, text-to-speech, one-page web UI, English / French / Spanish | built and tested with fake providers; the spoken check (under ~3 s per turn) needs the Deepgram and ElevenLabs keys |
-| 3. File uploads, pgvector search, technical and system design modes | planned |
+| 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |

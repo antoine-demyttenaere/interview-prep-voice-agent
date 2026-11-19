@@ -1,0 +1,56 @@
+# technical_backend.yaml - seeded questions for technical backend interviews.
+#
+# scripts/seed_question_bank.py loads this file into the question_bank table and embeds each
+# question with Voyage. plan_questions then picks the ones closest to the brief's focus areas
+# and adapts them to the company. Add your own: mode, topic, difficulty (easy | medium | hard), text.
+
+mode: technical_backend
+questions:
+  - topic: databases
+    difficulty: medium
+    text: A query that used to take 20 milliseconds now takes 3 seconds in production. Walk me through how you would find out why and fix it.
+  - topic: databases
+    difficulty: medium
+    text: How do you decide which indexes a Postgres table needs, and what does an index cost you?
+  - topic: databases
+    difficulty: hard
+    text: Explain transaction isolation levels. Which one would you use for a payment ledger, and why?
+  - topic: databases
+    difficulty: hard
+    text: How would you change the schema of a large, busy table without downtime?
+  - topic: apis
+    difficulty: easy
+    text: What makes a REST API easy to use and to evolve? How do you handle breaking changes?
+  - topic: apis
+    difficulty: medium
+    text: How do you make an API endpoint idempotent, and why does it matter for retries?
+  - topic: concurrency
+    difficulty: medium
+    text: Two requests update the same record at the same time. What can go wrong, and how do you prevent it?
+  - topic: concurrency
+    difficulty: hard
+    text: In Python, when would you use async, threads or processes? Give an example of each.
+  - topic: caching
+    difficulty: medium
+    text: Where would you add a cache to a slow read-heavy service, and how do you keep it from serving stale data?
+  - topic: messaging
+    difficulty: medium
+    text: When would you put a message queue between two services? What new problems does it bring?
+  - topic: messaging
+    difficulty: hard
+    text: How do you guarantee that an event is processed exactly once, or at least make it look that way?
+  - topic: reliability
+    difficulty: medium
+    text: A service you own keeps missing its availability target. How do you find out why and what do you change?
+  - topic: reliability
+    difficulty: medium
+    text: What do you put in place before your service goes to production, so you know when it breaks?
+  - topic: incidents
+    difficulty: medium
+    text: Tell me about the hardest production bug you have debugged. How did you find the cause?
+  - topic: testing
+    difficulty: easy
+    text: How do you decide what to test with unit tests, integration tests and end-to-end tests?
+  - topic: security
+    difficulty: medium
+    text: How do you store user passwords and API secrets, and how do you protect an API from abuse?

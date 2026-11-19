@@ -1,13 +1,33 @@
-"""Shared test helpers: a fake Claude, so tests run free, fast and without an API key.
+"""Shared test helpers: a fake Claude and a fake embedder, so tests run free, fast and offline.
 
-pytest loads conftest.py automatically. Any test that takes the `fake` argument gets a
-FakeClaude swapped into app/graph/nodes.py in place of the real structured() / text_reply().
+pytest loads conftest.py automatically.
+- `fake`: any test that takes this argument gets a FakeClaude swapped into app/graph/nodes.py
+  in place of the real structured() / text_reply().
+- FakeEmbedder replaces Voyage in EVERY test (autouse), so no test ever calls the real API.
+  Its vectors come from the words of the text (each word adds to one of the 1024 positions,
+  chosen by a hash), so texts that share words are close: enough to test that search works.
+- Tests use their own database, interview_test, created and migrated on the first run, so test
+  interviews never mix with your real ones. DATABASE_URL is switched before the app reads it.
 """
 
-import pytest
+import hashlib
+import math
+import os
+import re
 
-from app.graph import nodes
-from app.graph.schemas import (
+# Must run before anything calls app.config.get_settings(), i.e. before the app imports below.
+_REAL_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://app:app@localhost:5433/interview")
+TEST_DB = "interview_test"
+os.environ["DATABASE_URL"] = _REAL_URL.rsplit("/", 1)[0] + "/" + TEST_DB
+
+import psycopg  # noqa: E402
+import pytest  # noqa: E402
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+
+from app.graph import nodes  # noqa: E402
+from app.rag import embeddings  # noqa: E402
+from app.graph.schemas import (  # noqa: E402
     AnswerEvaluation,
     CriterionScore,
     FinalFeedback,
@@ -15,6 +35,17 @@ from app.graph.schemas import (
     PlannedQuestion,
     QuestionPlan,
 )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_database():
+    """Create the interview_test database if needed and bring it to the latest migration."""
+    admin_url = _REAL_URL.replace("postgresql+psycopg://", "postgresql://").rsplit("/", 1)[0] + "/postgres"
+    with psycopg.connect(admin_url, autocommit=True) as conn:
+        if not conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (TEST_DB,)).fetchone():
+            conn.execute(f'CREATE DATABASE "{TEST_DB}"')
+    command.upgrade(Config("alembic.ini"), "head")
+    yield
 
 BRIEF = InterviewBrief(
     company_summary="Fake Co makes fakes.",
@@ -33,6 +64,7 @@ class FakeClaude:
     def __init__(self):
         self.calls: list[str] = []
         self.systems: list[str] = []  # system prompts sent, to check the language
+        self.asks: list[str] = []  # ask prompts sent, to check the retrieved context
 
     def structured(self, *, schema, user, system, **_):
         self.calls.append(schema.__name__)
@@ -41,7 +73,9 @@ class FakeClaude:
             return BRIEF
         if schema is QuestionPlan:
             return QuestionPlan(
-                questions=[PlannedQuestion(text=f"Q{i}", topic="t", rationale="r") for i in range(1, 4)]
+                questions=[
+                    PlannedQuestion(text=f"Q{i}", topic="t", rationale="r", based_on="brief") for i in range(1, 4)
+                ]
             )
         if schema is AnswerEvaluation:
             last_answer = user.rsplit("Candidate:", 1)[-1].split("</exchange>", 1)[0]
@@ -61,6 +95,7 @@ class FakeClaude:
 
     def text_reply(self, *, user, **_):
         self.calls.append("ask")
+        self.asks.append(user)
         return "follow-up?" if "needs a follow-up" in user else "next question?"
 
 
@@ -69,4 +104,26 @@ def fake(monkeypatch):
     f = FakeClaude()
     monkeypatch.setattr(nodes, "structured", f.structured)
     monkeypatch.setattr(nodes, "text_reply", f.text_reply)
+    return f
+
+
+class FakeEmbedder:
+    """Bag-of-words vectors: deterministic, offline, and similar texts get similar vectors."""
+
+    def embed(self, texts, input_type):
+        vectors = []
+        for text in texts:
+            v = [0.0] * embeddings.DIMENSIONS
+            for word in re.findall(r"[a-z0-9]+", text.lower()):
+                if len(word) >= 2:
+                    v[int(hashlib.md5(word.encode()).hexdigest(), 16) % embeddings.DIMENSIONS] += 1.0
+            norm = math.sqrt(sum(x * x for x in v)) or 1.0
+            vectors.append([x / norm for x in v])
+        return vectors
+
+
+@pytest.fixture(autouse=True)
+def fake_embedder(monkeypatch):
+    f = FakeEmbedder()
+    monkeypatch.setattr(embeddings, "get_embedder", lambda: f)
     return f

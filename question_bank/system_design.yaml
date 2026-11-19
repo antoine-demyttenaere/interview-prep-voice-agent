@@ -1,0 +1,44 @@
+# system_design.yaml - seeded design problems for system design interviews.
+#
+# scripts/seed_question_bank.py loads this file into the question_bank table and embeds each
+# question with Voyage. plan_questions then picks the ones closest to the brief and adapts them
+# to the company's product. Add your own: mode, topic, difficulty (easy | medium | hard), text.
+
+mode: system_design
+questions:
+  - topic: tracking
+    difficulty: hard
+    text: Design a real-time parcel tracking system that ingests status events from many carriers and shows customers the latest status.
+  - topic: notifications
+    difficulty: medium
+    text: Design a notification service that sends emails, SMS and push messages to millions of users, with user preferences and retries.
+  - topic: url shortener
+    difficulty: easy
+    text: Design a URL shortener. How do you generate the short codes, and how do you handle very popular links?
+  - topic: rate limiting
+    difficulty: medium
+    text: Design a rate limiter for a public API used by thousands of customers.
+  - topic: event pipeline
+    difficulty: hard
+    text: Design an event pipeline that must handle three times today's volume within 18 months, without losing events.
+  - topic: search
+    difficulty: medium
+    text: Design the search feature of an online store, with filters, typo tolerance and fresh stock levels.
+  - topic: payments
+    difficulty: hard
+    text: Design a payment system that charges customers exactly once, even when the payment provider times out.
+  - topic: chat
+    difficulty: medium
+    text: Design a chat application with one-to-one and group conversations, online status and message history.
+  - topic: file storage
+    difficulty: medium
+    text: Design a service where users upload documents and share them with others, with previews and access rights.
+  - topic: scheduling
+    difficulty: medium
+    text: Design a job scheduler that runs millions of delayed and recurring tasks reliably.
+  - topic: analytics
+    difficulty: hard
+    text: Design a dashboard showing live metrics computed from billions of events per day.
+  - topic: multi-region
+    difficulty: hard
+    text: Your service runs in one region and must now serve customers in a new country with low latency. What changes?

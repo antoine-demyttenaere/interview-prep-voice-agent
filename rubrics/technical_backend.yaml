@@ -1,0 +1,31 @@
+# technical_backend.yaml - how answers are scored in technical backend interviews (mode "technical_backend").
+#
+# Used by evaluate_answer (each answer) and final_feedback (the whole interview), through
+# app/graph/prompts.rubric_text(), which turns this file into text inside the prompt.
+# uses_question_bank: true makes plan_questions start from the closest questions of
+# question_bank/technical_backend.yaml (seed them with scripts/seed_question_bank.py).
+
+mode: technical_backend
+uses_question_bank: true
+scale:
+  1: poor, wrong or no real answer
+  2: weak, vague or partly wrong
+  3: adequate, correct on the basics
+  4: strong, correct with clear reasoning and examples
+  5: excellent, deep and precise, would clearly impress a senior interviewer
+criteria:
+  - id: correctness
+    name: Technical correctness
+    description: What is said is accurate; no confusion of key concepts.
+  - id: depth
+    name: Depth
+    description: Goes beyond the definition to how it works, edge cases and limits.
+  - id: tradeoffs
+    name: Trade-offs
+    description: Compares options and explains when each fits, with reasons.
+  - id: experience
+    name: Real experience
+    description: Backs the answer with concrete situations from past work.
+  - id: communication
+    name: Communication
+    description: Structured and clear when spoken; checks assumptions; right length.

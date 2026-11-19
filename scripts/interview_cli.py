@@ -1,10 +1,11 @@
 """Text-mode interview in the terminal: create an interview, review the brief, type your answers.
 
-It is a small client of the API: it only sends HTTP requests (the same ones a web page will
-send in Phase 2) and prints the replies; all the interview logic runs in the server. It uses
-only Python's standard library, so it runs on your machine without installing anything.
+It is a small client of the API: it only sends HTTP requests (the same ones the web page sends)
+and prints the replies; all the interview logic runs in the server. It uses only Python's
+standard library, so it runs on your machine without installing anything.
 
-Flow: `new` creates the interview, adds the documents and starts a session. Then run() loops:
+Flow: `new` creates the interview, uploads the documents (PDF, DOCX, EML or text files; the
+server reads, chunks and embeds them) and starts a session. Then run() loops:
 show what the session is waiting for (the brief or a question), read your input, POST it to
 /sessions/{id}/resume, and repeat until the final feedback.
 
@@ -23,6 +24,7 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 API = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
@@ -49,6 +51,36 @@ def call(method: str, path: str, body: dict | None = None) -> dict:
         raise ApiError(exc.code, json.dumps(detail) if not isinstance(detail, str) else detail) from None
     except urllib.error.URLError as exc:
         sys.exit(f"Cannot reach the API at {API} ({exc.reason}). Is `docker compose up` running?")
+
+
+def upload(path: str, fields: dict) -> dict:
+    """POST a file to /documents/upload as a multipart form (what a browser's file input sends)."""
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, value in fields.items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    filename = Path(path).name
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n".encode()
+        + Path(path).read_bytes()
+        + b"\r\n"
+    )
+    body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        API + "/documents/upload", data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise ApiError(exc.code, json.loads(exc.read()).get("detail", exc.reason)) from None
+
+
+def report(doc: dict) -> None:
+    note = f" (not indexed: {doc['embedding_error']})" if doc.get("embedding_error") else ""
+    print(f"  added {doc['doc_type']}: {doc['source']}, {doc['chars']} characters, {doc['chunks']} chunks{note}")
 
 
 # ---------- printing ----------
@@ -160,13 +192,14 @@ def main() -> None:
     new = sub.add_parser("new", help="create an interview, add documents, start a session")
     new.add_argument("--company", required=True)
     new.add_argument("--role", required=True)
-    new.add_argument("--mode", default="behavioral", choices=["behavioral", "job_post"])
+    new.add_argument("--mode", default="behavioral",
+                     choices=["behavioral", "job_post", "technical_backend", "system_design"])
     new.add_argument("--language", default="en", choices=["en", "fr", "es"],
                      help="language of the interview, brief and feedback")
     new.add_argument("--interviewer", action="append", default=[], help="name, repeatable")
     new.add_argument("--doc", action="append", default=[], metavar="TYPE:PATH",
-                     help="job_post | recruiter_email | notes | other, then a text file; repeatable")
-    new.add_argument("--cv", metavar="PATH", help="store a CV (shared by all interviews)")
+                     help="job_post | recruiter_email | notes | other, then a PDF, DOCX, EML or text file; repeatable")
+    new.add_argument("--cv", metavar="PATH", help="store a CV file (shared by all interviews)")
     new.add_argument("--questions", type=int)
 
     start = sub.add_parser("start", help="new session for an existing interview")
@@ -185,12 +218,10 @@ def main() -> None:
             })
             print(f"Interview {interview['id']} created.")
             if args.cv:
-                call("POST", "/documents", {"doc_type": "cv", "source": args.cv,
-                                            "text": Path(args.cv).read_text(encoding="utf-8")})
+                report(upload(args.cv, {"doc_type": "cv"}))
             for spec in args.doc:
                 doc_type, _, path = spec.partition(":")
-                call("POST", "/documents", {"interview_id": interview["id"], "doc_type": doc_type,
-                                            "source": path, "text": Path(path).read_text(encoding="utf-8")})
+                report(upload(path, {"interview_id": interview["id"], "doc_type": doc_type}))
             print("Reading the documents and writing the brief (this can take a minute)...")
             view = call("POST", f"/interviews/{interview['id']}/sessions", {"num_questions": args.questions})
         elif args.cmd == "start":

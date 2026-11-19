@@ -1,0 +1,36 @@
+# system_design.yaml - how answers are scored in system design interviews (mode "system_design").
+#
+# Used by evaluate_answer (each answer) and final_feedback (the whole interview), through
+# app/graph/prompts.rubric_text(), which turns this file into text inside the prompt.
+# uses_question_bank: true makes plan_questions start from question_bank/system_design.yaml.
+# max_followups: 3 overrides the MAX_FOLLOWUPS setting, because a design discussion goes deeper.
+# With 3 follow-ups per problem, 2 or 3 questions make a full interview.
+
+mode: system_design
+uses_question_bank: true
+max_followups: 3
+scale:
+  1: poor, no workable design
+  2: weak, a design with major gaps
+  3: adequate, a workable design with some gaps
+  4: strong, a sound design with clear reasoning
+  5: excellent, would pass a senior system design round
+criteria:
+  - id: requirements
+    name: Requirements and scale
+    description: Clarifies functional needs, constraints and rough numbers before designing.
+  - id: architecture
+    name: High-level design
+    description: Clear components and data flow that meet the requirements.
+  - id: data
+    name: Data and APIs
+    description: Sensible data model, storage choice and API shape.
+  - id: scaling
+    name: Scaling and reliability
+    description: Finds the bottlenecks and failure modes and handles them (caching, queues, replicas...).
+  - id: tradeoffs
+    name: Trade-offs
+    description: Names the alternatives and justifies the choices made.
+  - id: communication
+    name: Communication
+    description: Drives the discussion, explains step by step, responds well to new constraints.

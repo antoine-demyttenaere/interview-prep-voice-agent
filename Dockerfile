@@ -1,7 +1,8 @@
 # Dockerfile - recipe for the "api" image: a small Linux system with Python and the app's packages.
 #
 # Steps: start from the official slim Python 3.12 image, install requirements.txt, copy the code,
-# and on start apply the database migrations, then launch the web server (uvicorn).
+# and on start apply the database migrations, sync the question bank, then launch the web
+# server (uvicorn).
 # requirements.txt is copied and installed before the rest of the code so Docker can cache that
 # slow step: changing your code does not reinstall the packages.
 # Locally, docker-compose.yml replaces the start command to add --reload; in the cloud
@@ -22,4 +23,4 @@ RUN pip install -r requirements.txt
 COPY . .
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && (python scripts/seed_question_bank.py || echo 'Question bank not seeded') && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

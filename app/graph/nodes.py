@@ -4,8 +4,10 @@ Each node receives the state and returns only the keys it changes. In order:
 
 1. prepare_brief    Sonnet reads the documents and writes the Interview Brief.
 2. review_brief     pauses (interrupt) so you approve, edit or ask for changes.
-3. plan_questions   Sonnet picks the main questions from the approved brief.
-4. ask              Haiku says the next question, or a follow-up, in natural words.
+3. plan_questions   Sonnet picks the main questions from the approved brief (and, in the
+                    technical modes, from the closest seeded questions of the question bank).
+4. ask              searches your documents for passages that match the question (pgvector),
+                    then Haiku says the question, or a follow-up, in natural words.
 5. answer           pauses (interrupt) until you answer.
 6. evaluate_answer  Haiku scores the answer with the rubric and decides on a follow-up.
 7. final_feedback   Sonnet writes the report from the transcript and the scores.
@@ -28,6 +30,7 @@ from app.graph import prompts
 from app.graph.schemas import AnswerEvaluation, FinalFeedback, InterviewBrief, QuestionPlan
 from app.graph.state import InterviewState
 from app.llm import structured, text_reply
+from app.rag import retrieve
 
 
 # ---------- helpers ----------
@@ -58,6 +61,21 @@ def _interviewer_system(state: InterviewState) -> str:
         mode_guidance=prompts.mode_guidance(state["mode"]),
         brief=_brief_json(state),
     )
+
+
+def _context_block(chunks: list[dict]) -> str:
+    if not chunks:
+        return "(no matching passages)"
+    return "\n\n".join(
+        f'<passage source="{c["metadata"]["source"]}" type="{c["metadata"]["doc_type"]}">\n'
+        f'{c["page_content"]}\n</passage>'
+        for c in chunks
+    )
+
+
+def _max_followups(state: InterviewState) -> int:
+    """A rubric can allow more follow-ups (system design is a long discussion); else the setting."""
+    return prompts.load_rubric(state["mode"]).get("max_followups", get_settings().max_followups)
 
 
 def _transcript_text(turns: list[dict]) -> str:
@@ -112,10 +130,24 @@ def review_brief(state: InterviewState) -> dict:
 def plan_questions(state: InterviewState) -> dict:
     s = get_settings()
     n = state.get("num_questions") or s.num_questions
+    # Technical modes: offer Claude the closest seeded questions as a starting point.
+    bank = []
+    if prompts.load_rubric(state["mode"]).get("uses_question_bank"):
+        brief = state["brief"]
+        query = "; ".join(brief["focus_areas"] + brief["role_requirements"])
+        bank = retrieve.search_question_bank(state["mode"], query, k=max(8, 2 * n))
+    bank_text = "\n".join(
+        f'- [{q["metadata"]["topic"]}, {q["metadata"]["difficulty"]}] {q["page_content"]}' for q in bank
+    ) or "(none for this interview type)"
     plan = structured(
         model=s.model_reasoning,
         system=_interviewer_system(state),
-        user=prompts.render("plan_questions", num_questions=n, rubric=prompts.rubric_text(state["mode"])),
+        user=prompts.render(
+            "plan_questions",
+            num_questions=n,
+            rubric=prompts.rubric_text(state["mode"]),
+            bank_questions=bank_text,
+        ),
         schema=QuestionPlan,
         max_tokens=8000,
         effort="medium",
@@ -136,6 +168,13 @@ def ask(state: InterviewState) -> dict:
     q_index = state["q_index"]
     question = state["questions"][q_index]
     focus = state.get("followup_focus")
+
+    # Find the passages of my documents that match what is about to be asked.
+    chunks = []
+    if state.get("interview_id"):
+        query = f"{focus} {question['text']}" if focus else f"{question['topic']}: {question['text']}"
+        chunks = retrieve.search_documents(state["interview_id"], query, k=s.retrieval_k)
+
     if focus:
         directive = prompts.render("ask_followup", focus=focus, question=question["text"])
     else:
@@ -151,12 +190,14 @@ def ask(state: InterviewState) -> dict:
         user=prompts.render(
             "ask",
             transcript=_transcript_text(state.get("transcript", [])),
+            context=_context_block(chunks),
             directive=directive,
         ),
         max_tokens=2000,
         effort="low",
     )
-    turn = {"role": "interviewer", "text": text, "q_index": q_index, "followup": bool(focus)}
+    sources = list(dict.fromkeys(c["metadata"]["source"] for c in chunks))  # unique, in order
+    turn = {"role": "interviewer", "text": text, "q_index": q_index, "followup": bool(focus), "sources": sources}
     return {"current_question": text, "transcript": state.get("transcript", []) + [turn]}
 
 
@@ -193,7 +234,7 @@ def evaluate_answer(state: InterviewState) -> dict:
             planned_question=state["questions"][q_index]["text"],
             exchange=_transcript_text(question_turns),
             followups_used=state["followups"],
-            max_followups=s.max_followups,
+            max_followups=_max_followups(state),
         ),
         schema=AnswerEvaluation,
         max_tokens=4000,
@@ -208,7 +249,7 @@ def evaluate_answer(state: InterviewState) -> dict:
     }
     evaluations = state.get("evaluations", []) + [record]
 
-    if ev.follow_up and ev.follow_up_focus.strip() and state["followups"] < s.max_followups:
+    if ev.follow_up and ev.follow_up_focus.strip() and state["followups"] < _max_followups(state):
         return {
             "evaluations": evaluations,
             "followups": state["followups"] + 1,

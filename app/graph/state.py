@@ -9,7 +9,7 @@ total=False means keys may be missing (final_feedback exists only at the end), w
 nodes read optional keys with state.get("key").
 """
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class DocumentInput(TypedDict):
@@ -23,13 +23,14 @@ class Turn(TypedDict):
     text: str
     q_index: int
     followup: bool
+    sources: NotRequired[list[str]]  # interviewer turns: documents the question drew on
 
 
 class InterviewState(TypedDict, total=False):
     # Set when the session starts
     session_id: str
     interview_id: str
-    mode: str  # behavioral | job_post (technical_backend, system_design in Phase 3)
+    mode: str  # behavioral | job_post | technical_backend | system_design
     language: str  # en | fr | es (missing in sessions started before Phase 2 = "en")
     company: str
     role: str

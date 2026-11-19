@@ -28,6 +28,10 @@ Usually 3-15 lines; a tiny file needs less. Comment syntax:
 
 Keep the header accurate whenever the file changes.
 
+## Personal data
+
+Real documents (CV, job posts, recruiter emails) live in `my_docs/`, which git ignores. Never put them in `samples/` (committed, fictional only) and never commit them.
+
 ## HOW_IT_WORKS.md
 
 The guide to the whole codebase for beginners and intermediates. Update it in the same change whenever the flow, a file's role, a command, the data model or the stack changes, and at the end of each phase (update "Where the project is").

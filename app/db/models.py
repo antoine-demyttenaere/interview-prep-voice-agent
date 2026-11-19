@@ -7,6 +7,9 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
   its brief.
 - Document: a text attached to an interview (job post, email, notes). Your CV has no
   interview_id, so it is shared by all interviews.
+- Chunk: a small piece of a document with its embedding (a vector column from pgvector), used
+  to find the passages that match a question. interview_id is copied from the document.
+- QuestionBankItem: a seeded technical / system design question, with its embedding.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
   in LangGraph's checkpoint tables, under the session's thread_id.
 
@@ -16,7 +19,8 @@ Editing a class does not change the database by itself: also add a migration in 
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, Text, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -60,6 +64,38 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     interview: Mapped[Interview | None] = relationship(back_populates="documents")
+    chunks: Mapped[list["Chunk"]] = relationship(back_populates="document", passive_deletes=True)
+
+
+class Chunk(Base):
+    """A searchable piece of a document: its text and its embedding (1024 numbers)."""
+
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    interview_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # copied from the document
+    chunk_index: Mapped[int]  # position in the document: 0, 1, 2...
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024))
+    # "metadata" is a reserved name in SQLAlchemy classes, so the attribute is called meta
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)  # doc_type, source
+
+    document: Mapped[Document] = relationship(back_populates="chunks")
+
+
+class QuestionBankItem(Base):
+    """A seeded question for the technical modes (from question_bank/*.yaml), with its embedding."""
+
+    __tablename__ = "question_bank"
+    __table_args__ = (UniqueConstraint("mode", "text"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    mode: Mapped[str] = mapped_column(String(40), index=True)  # technical_backend | system_design
+    topic: Mapped[str] = mapped_column(String(100))
+    difficulty: Mapped[str] = mapped_column(String(20))  # easy | medium | hard
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))
 
 
 class Session(Base):

@@ -131,9 +131,9 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 **Check:** a full spoken interview runs locally, at under about 3 s per turn.
 
 ### Phase 3: Uploads, pgvector and all modes
-- [ ] PDF, DOCX and `.eml` parsing, chunking, Voyage embeddings
-- [ ] Per-question retrieval from pgvector
-- [ ] Seed the question bank; add the technical backend and system design modes
+- [x] PDF, DOCX and `.eml` parsing, chunking, Voyage embeddings (`voyage-4`)
+- [x] Per-question retrieval from pgvector (traced as retriever runs; the transcript records each question's sources)
+- [x] Seed the question bank; add the technical backend and system design modes
 
 **Check:** the LangSmith trace shows which document each question came from.
 

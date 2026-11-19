@@ -1,4 +1,4 @@
-"""Claude clients, wrapped so every call is traced in LangSmith."""
+"""Claude client for the whole app, wrapped so every call is traced in LangSmith."""
 
 from functools import lru_cache
 

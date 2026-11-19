@@ -1,3 +1,5 @@
+"""App settings loaded from env vars / .env: database URL, API keys, model IDs."""
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict

@@ -1,3 +1,6 @@
+# Local dev stack: Postgres + pgvector (db) and the FastAPI app (api) with hot reload.
+# Start with: docker compose up -d
+
 services:
   db:
     image: pgvector/pgvector:pg17

@@ -1,3 +1,5 @@
+## Template Alembic uses to generate each new migration file (alembic revision).
+## Lines starting with ## are Mako comments and are not copied into the output.
 """${message}
 
 Revision ID: ${up_revision}

@@ -1,3 +1,6 @@
+# Image for the FastAPI app: installs Python deps, runs migrations, then starts uvicorn.
+# Used by docker-compose.yml locally and by ECS in the cloud (Phase 5).
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

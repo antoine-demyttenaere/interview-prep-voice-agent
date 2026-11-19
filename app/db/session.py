@@ -1,3 +1,5 @@
+"""Shared SQLAlchemy engine for Postgres, created once from DATABASE_URL."""
+
 from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine

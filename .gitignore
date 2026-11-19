@@ -1,3 +1,5 @@
+# Files git should never track: secrets (.env), Python caches, local tool state, recorded audio.
+
 .env
 __pycache__/
 *.pyc

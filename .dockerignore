@@ -1,3 +1,5 @@
+# Files kept out of the Docker build context: secrets, git history, caches, Terraform, audio.
+
 .env
 .git
 .venv

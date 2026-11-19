@@ -1,3 +1,5 @@
+"""FastAPI entry point: creates the app and its routes (for now only /health)."""
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import text

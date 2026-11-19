@@ -1,4 +1,6 @@
-# Phase 0 check: stack up, /health green, Claude calls traced in LangSmith.
+# Phase 0 check: builds and starts the stack, waits for /health, then runs the Claude smoke test.
+# Usage: ./scripts/check-phase0.ps1 (needs .env with ANTHROPIC_API_KEY and LANGSMITH_API_KEY).
+
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 

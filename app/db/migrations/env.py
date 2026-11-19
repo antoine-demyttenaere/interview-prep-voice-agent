@@ -1,3 +1,5 @@
+"""Alembic runtime: connects to DATABASE_URL and applies migrations (online or offline)."""
+
 from logging.config import fileConfig
 
 from alembic import context

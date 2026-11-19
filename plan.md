@@ -158,7 +158,7 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 - [ ] Live turn detection and interrupting the agent mid-sentence
 - [ ] Session history and progress view
 - [ ] Interviewer personas
-- [ ] Load a company web page from a URL into the documents
+- [x] Load a company web page from a URL into the documents
 - [ ] Benchmark other speech providers through the interfaces
 
 ## Repo layout

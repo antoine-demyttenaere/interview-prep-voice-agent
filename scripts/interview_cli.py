@@ -97,13 +97,14 @@ def print_list(title: str, items: list[str]) -> None:
 
 def print_brief(brief: dict) -> None:
     print("\n" + "=" * 30 + " INTERVIEW BRIEF " + "=" * 30)
-    print("\nCompany:\n" + wrap(brief["company_summary"]))
-    print_list("Role requirements", brief["role_requirements"])
-    print("\nLikely format:\n" + wrap(brief["interview_format"]))
-    print_list("Interviewers", [f"{i['name']} ({i['role']}) {i['notes']}".strip() for i in brief["interviewers"]])
-    print_list("Gaps between CV and role", brief["cv_gaps"])
-    print_list("Focus areas", brief["focus_areas"])
-    print_list("Probable questions", brief["probable_questions"])
+    print_list("Focus on", brief["focus_areas"])
+    print("\nThe company:\n" + wrap(brief["company_summary"]))
+    print("\nThe interview:\n" + wrap(brief["interview_format"]))
+    if brief["interviewers"]:
+        print_list("Interviewers", [f"{i['name']}, {i['role']} {i['notes']}".strip() for i in brief["interviewers"]])
+    print_list("The role needs", brief["role_requirements"])
+    print_list("Your gaps", brief["cv_gaps"])
+    print_list("Likely questions", brief["probable_questions"])
     print("=" * 77)
 
 
@@ -113,6 +114,8 @@ def print_feedback(fb: dict) -> None:
     print("\nRubric:")
     for s in fb["rubric_scores"]:
         print(wrap(f"{s['criterion']}: {s['score']}/5 - {s['note']}"))
+        for idea in s.get("improve", []):
+            print(wrap(f"-> {idea}", indent="      "))
     print("\nPer question:")
     for q in fb["per_question"]:
         print(wrap(f"[{q['score']}/5] {q['question']}"))
@@ -125,7 +128,7 @@ def print_feedback(fb: dict) -> None:
 # ---------- input ----------
 
 def read_answer() -> str:
-    print("(type your answer; finish with an empty line)")
+    print("(type your answer; finish with an empty line. Type /end to stop and get your feedback)")
     lines = []
     while True:
         line = input("> ")
@@ -177,6 +180,14 @@ def run(view: dict) -> None:
             tag = "follow-up" if pending["followup"] else f"question {pending['q_index'] + 1}/{pending['total']}"
             print(f"\nInterviewer ({tag}):\n" + wrap(pending["question"]))
             value = read_answer()
+            if value.strip() == "/end":
+                print("\nWriting your feedback...")
+                try:
+                    view = call("POST", f"/sessions/{view['session_id']}/end")
+                except ApiError as exc:
+                    print(f"\n{exc}")
+                    view = call("GET", f"/sessions/{view['session_id']}")
+                continue
 
         try:
             view = call("POST", f"/sessions/{view['session_id']}/resume", {"value": value})

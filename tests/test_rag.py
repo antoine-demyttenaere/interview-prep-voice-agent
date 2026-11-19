@@ -192,3 +192,55 @@ def test_system_design_allows_three_followups(fake, monkeypatch):
     values = graph.get_state(config).values
     assert [e["followup"] for e in values["evaluations"]] == [False, True, True, True]
     assert values["final_feedback"] is not None
+
+
+def test_back_from_the_brief_keeps_and_updates_the_interview(fake):
+    """GET returns pasted texts for refilling the form; PATCH updates the same interview."""
+    from app.main import app
+
+    with TestClient(app) as client:
+        iv = _interview(client)
+        client.post("/documents", json={"interview_id": iv["id"], "doc_type": "job_post",
+                                        "source": "pasted job post", "text": "Python and Postgres"})
+        docs = client.get(f"/interviews/{iv['id']}").json()["documents"]
+        assert docs[0]["pasted"] is True and docs[0]["text"] == "Python and Postgres"
+
+        updated = client.patch(f"/interviews/{iv['id']}", json={"role": "Staff Eng", "language": "fr"}).json()
+        assert updated["id"] == iv["id"] and updated["role"] == "Staff Eng" and updated["language"] == "fr"
+        assert updated["company"] == iv["company"] and updated["brief_status"] == "none"
+
+
+def test_html_to_text_keeps_the_content_and_drops_the_menus():
+    from app.rag.parsers import html_to_text
+
+    page = """<html><head><title>AI Product Builder - Qida</title><style>p{}</style></head><body>
+      <nav><a>Home</a><a>Careers</a></nav>
+      <main><h1>AI Product Builder</h1><p>Build &amp; ship AI products.</p>
+      <ul><li>Python and SQL</li><li>5+ years</li></ul>""" + "<p>More detail.</p>" * 60 + """</main>
+      <footer>Cookies</footer><script>track()</script></body></html>"""
+    title, text = html_to_text(page)
+    assert title == "AI Product Builder - Qida"
+    assert "Build & ship AI products." in text and "- Python and SQL" in text
+    assert "Careers" not in text and "Cookies" not in text and "track()" not in text
+
+
+def test_add_document_from_a_link(fake, monkeypatch):
+    from app.api import interviews
+    from app.main import app
+    from app.rag.parsers import ParseError
+
+    def fake_fetch(url):
+        if "linkedin" in url:
+            raise ParseError(f"{url} has almost no readable text")
+        return "Careers - Fake Co", "We build zebra logistics software. " * 20
+
+    monkeypatch.setattr(interviews, "fetch_page", fake_fetch)
+    with TestClient(app) as client:
+        iv = _interview(client)
+        doc = client.post("/documents/from-url", json={"interview_id": iv["id"], "url": "https://fake.co/careers"}).json()
+        assert doc["doc_type"] == "web_page" and doc["source"] == "https://fake.co/careers" and doc["chunks"] >= 1
+        hits = retrieve.search_documents(iv["id"], "zebra logistics", k=1)
+        assert hits[0]["metadata"]["source"] == "https://fake.co/careers"
+
+        bad = client.post("/documents/from-url", json={"interview_id": iv["id"], "url": "https://linkedin.com/jobs/1"})
+        assert bad.status_code == 422 and "almost no readable text" in bad.json()["detail"]

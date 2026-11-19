@@ -2,8 +2,10 @@
 
 - POST /interviews          body InterviewIn -> the new interview
 - GET  /interviews/{id}     the interview, its brief status, its documents and their chunk counts
+- PATCH /interviews/{id}    change company, role, type or language (the brief is then rewritten)
 - POST /documents           pasted text (body DocumentIn); leave interview_id empty for your CV
 - POST /documents/upload    a file (PDF, DOCX, EML, TXT, MD), sent as a multipart form
+- POST /documents/from-url  a link (job post, company page): the server reads the page's text
 - GET  /documents/cv        your shared CV documents;  DELETE /documents/{id} removes one
 
 Every new document is saved, then ingested: cut into chunks, embedded with Voyage and stored in
@@ -29,11 +31,12 @@ from app.db.session import get_db
 from app.rag.embeddings import EmbeddingError
 from app.rag.ingest import ingest_document
 from app.rag.parsers import ParseError, parse_file
+from app.rag.webpage import fetch_page
 
 router = APIRouter(tags=["interviews"])
 
 Mode = Literal["behavioral", "job_post", "technical_backend", "system_design"]
-DocType = Literal["cv", "job_post", "recruiter_email", "notes", "other"]
+DocType = Literal["cv", "job_post", "recruiter_email", "notes", "web_page", "other"]
 MAX_UPLOAD_BYTES = 10_000_000
 Language = Literal["en", "fr", "es"]  # interview, voice, brief and feedback language
 
@@ -67,16 +70,43 @@ def interview_out(i: Interview) -> dict:
         "brief": i.brief,
         "documents": [
             {"id": str(d.id), "doc_type": d.doc_type, "source": d.source,
-             "chars": len(d.raw_text or ""), "chunks": len(d.chunks)}
+             "chars": len(d.raw_text or ""), "chunks": len(d.chunks),
+             # pasted texts come back in full, so the page can put them back in the form
+             "pasted": d.source.startswith("pasted"),
+             "text": d.raw_text if d.source.startswith("pasted") else None}
             for d in i.documents
         ],
     }
+
+
+class InterviewUpdate(BaseModel):
+    """Only the fields you send are changed."""
+
+    company: str | None = None
+    role: str | None = None
+    mode: Mode | None = None
+    language: Language | None = None
 
 
 @router.post("/interviews", status_code=201)
 def create_interview(body: InterviewIn, db: DB = Depends(get_db)) -> dict:
     interview = Interview(**body.model_dump())
     db.add(interview)
+    db.commit()
+    db.refresh(interview)
+    return interview_out(interview)
+
+
+@router.patch("/interviews/{interview_id}")
+def update_interview(interview_id: uuid.UUID, body: InterviewUpdate, db: DB = Depends(get_db)) -> dict:
+    """Change an interview (e.g. after going back from its brief). Its brief must be written
+    again, so an approved brief is reset."""
+    interview = db.get(Interview, interview_id)
+    if not interview:
+        raise HTTPException(404, "Interview not found")
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(interview, field, value)
+    interview.brief, interview.brief_status = None, "none"
     db.commit()
     db.refresh(interview)
     return interview_out(interview)
@@ -139,6 +169,26 @@ def upload_document(
     _check_target(db, interview_id, doc_type)
     return _save_and_ingest(db, Document(
         interview_id=interview_id, doc_type=doc_type, source=file.filename or "upload", raw_text=parsed.text,
+    ))
+
+
+class LinkIn(BaseModel):
+    interview_id: uuid.UUID
+    url: str = Field(min_length=8, description="A job post or company page, starting with http(s)://")
+    doc_type: DocType = "web_page"
+
+
+@router.post("/documents/from-url", status_code=201)
+def add_document_from_url(body: LinkIn, db: DB = Depends(get_db)) -> dict:
+    """A web page: the server downloads it, keeps its readable text, then chunks and embeds it."""
+    _check_target(db, body.interview_id, body.doc_type)
+    try:
+        title, text = fetch_page(body.url)
+    except ParseError as exc:
+        raise HTTPException(422, str(exc))
+    header = f"{title}\n{body.url}\n\n" if title else f"{body.url}\n\n"
+    return _save_and_ingest(db, Document(
+        interview_id=body.interview_id, doc_type=body.doc_type, source=body.url[:300], raw_text=header + text,
     ))
 
 

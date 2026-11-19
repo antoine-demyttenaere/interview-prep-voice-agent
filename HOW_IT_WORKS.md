@@ -11,13 +11,13 @@ The goals, the phases and the decisions behind them are in [plan.md](plan.md). T
 The app runs a **mock job interview**, ending with a **scored feedback report**:
 
 1. You describe an upcoming interview (company, role, interview type, language) and add documents, pasted or as files (PDF, Word, .eml emails): the job post, recruiter emails, call notes, your CV.
-2. Claude reads them and writes an **Interview Brief**: what the company does, what the role needs, who the interviewers are, the gaps between your CV and the role, and the questions you're likely to get.
+2. Claude reads them and writes a short **Interview Brief** (readable in under two minutes): the 3 things to focus on, what the company does, the format and interviewers, what the role needs, the gaps between your CV and the role, and the 5 likely questions.
 3. You review the brief and approve it, edit it, or ask for changes.
 4. Claude plays the interviewer: it asks questions one at a time, scores each answer and asks follow-ups when an answer is vague. Before each question it searches your documents for the passages that matter, so questions refer to your real CV and the real role.
    There are four interview types: behavioral / HR, tailored to the job post, technical backend, and system design. The two technical ones start from a bank of seeded questions.
 5. At the end, Claude writes a feskedback report: scores, strengths, and concrete fixes.
 
-You use it from a web page at http://localhost:8000: you hold a button and speak your answer, and the interviewer talks back (Phase 2). The interview can be in English, French or Spanish. You can also type your answers, on the page (switch Voice off) or in a terminal.
+You use it from a web page at http://localhost:8000: you click a button, speak your answer and click again, and the interviewer talks back (Phase 2). The interview can be in English, French or Spanish. You can also type your answers, on the page (switch Voice off) or in a terminal.
 
 ---
 
@@ -68,7 +68,7 @@ Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on 
 | **Deepgram** | Speech-to-text (STT): turns your recorded answer into text. Model `nova-3`, English, French and Spanish. | [app/voice/stt.py](app/voice/stt.py) |
 | **ElevenLabs** | Text-to-speech (TTS): turns the interviewer's words into a natural voice. Model `eleven_flash_v2_5`, built for low latency. | [app/voice/tts.py](app/voice/tts.py) |
 | **httpx** | A Python HTTP client, used to call Deepgram and ElevenLabs. | app/voice/ |
-| **MediaRecorder** | The browser's built-in recorder: it captures the microphone while you hold the button. | [web/app.js](web/app.js) |
+| **MediaRecorder** | The browser's built-in recorder: it captures the microphone between your clicks on the button. | [web/app.js](web/app.js) |
 | **pytest** | Runs the automated tests. | [tests/](tests/) |
 
 ---
@@ -95,7 +95,8 @@ app/
     stt.py             Speech-to-text: the interface + Deepgram
     tts.py             Text-to-speech: the interface + ElevenLabs
   rag/                 Searching your documents (retrieval-augmented generation)
-    parsers.py         PDF, Word, .eml and text files -> text
+    parsers.py         PDF, Word, .eml and text files -> text (and HTML -> text)
+    webpage.py         A link -> the page's readable text
     chunking.py        Text -> chunks of a few paragraphs
     embeddings.py      The embedding interface + Voyage AI
     ingest.py          Document -> chunks -> embeddings -> chunks table
@@ -114,9 +115,9 @@ scripts/
   embed_documents.py   Embeds documents that have no chunks yet
   check-phase0.ps1     Phase 0 check in one command
 web/
-  index.html           The web page: setup, brief review, interview, feedback
-  app.js               Its logic: API calls, push-to-talk recording, audio playback
-  style.css            Its look (follows your light or dark setting)
+  index.html           The web page: setup (3 steps + My CV), brief, interview, feedback
+  app.js               Its logic: API calls, click-to-talk recording, audio playback, end / leave
+  style.css            Its look: colors per action, two columns on wide screens, light / dark
 samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
 tests/                 Tests with a fake Claude, fake speech and a fake embedder, on their own database
@@ -152,7 +153,7 @@ You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db
 
 ### Step 1: create the interview and add documents
 
-On the web page (http://localhost:8000), fill in the "New interview" form (paste texts and/or pick files) and press **Write my brief**. Or, in a terminal (any of the paths can be a PDF, Word, .eml or text file):
+On the web page (http://localhost:8000), go through the three steps from left to right, one at a time (**Next** / **Back**, a swipe, or a click on the step bar): 1 the interview, 2 the company and the job (the full job post, links, notes, files), 3 your CV; then press **Prepare my interview brief**. Links are read by the server ([webpage.py](app/rag/webpage.py), `POST /documents/from-url`): it downloads the page, keeps its readable text (no menus or scripts, at most 30,000 characters) and stores it like any other document. Pages that need JavaScript or a login (often LinkedIn) can't be read: the page then asks you to paste the text. Step 3 shows the CV already stored, with a **Delete** button; adding a new one with "Replace my stored CV" ticked deletes the old one after the new one is saved, so only one CV feeds your briefs. Or, in a terminal (any of the paths can be a PDF, Word, .eml or text file):
 
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
@@ -214,7 +215,7 @@ Then **`review_brief`** runs and calls `interrupt({"type": "review_brief", "brie
 
 ### Step 3: you review the brief
 
-The CLI prints the brief and asks for approve / request changes / edit, then sends `POST /sessions/{id}/resume`:
+The web page shows the brief as six numbered cards you scroll from left to right (focus on, the company, the interview, the role needs, your gaps, likely questions), shown one at a time with a round arrow on each side (or the keyboard ← →), then **Approve and start the interview** and **Ask for changes** underneath. **‹ Back to my documents** reopens the setup form on the CV step with everything still filled in; if you change something (company, role, type, language, number of questions, a pasted text, a link, a file or your CV), **Prepare my interview brief** updates the same interview and writes a new brief; if nothing changed, the button reads **Back to my brief** and keeps the same brief, without calling Claude again. The CLI prints it and asks for approve / request changes / edit. Both then send `POST /sessions/{id}/resume`:
 
 - approve: `{"value": {"action": "approve"}}`
 - ask for changes: `{"value": {"action": "revise", "feedback": "the interviewer is the CTO, not the EM"}}`
@@ -253,7 +254,10 @@ The code enforces the follow-up limit, not Claude, so it holds even if Claude ke
 
 ### Step 6: the final feedback
 
-**`final_feedback`** (Sonnet) gets the whole transcript and every per-answer evaluation, and returns a `FinalFeedback`: an overall score, rubric scores, a comment per question, strengths and fixes. The graph reaches `END`. The API sets `sessions.ended_at` and returns `status: "done"` with the report, which the page or the CLI shows.
+**Ending early:** the **End interview and get feedback** button (under the answer controls) (or typing `/end` in the CLI) calls `POST /sessions/{id}/end`, which resumes the paused `answer` step with `{"end": true}` instead of an answer. The step drops the unanswered question, sets `ended_early`, and `route_after_answer` goes straight to `final_feedback`, whose prompt is told to judge only the questions you answered. It needs at least one answer; to leave without feedback, use **New interview** (top right): the session stays saved.
+
+
+**`final_feedback`** (Sonnet) gets the whole transcript and every per-answer evaluation, and returns a short `FinalFeedback` (about 400 words): an overall score, a 2-3 sentence summary, one sentence per rubric criterion, for each question its number, score, a comment and "a stronger answer", up to 3 strengths and the 3 most important fixes. Each criterion also gets 2 ideas to raise its score next time (`improve`). The page shows the score and three cards you swipe through ("In short", "Fix first", "Keep doing") on the left and, on the right, the criteria and questions as lines you click to open: a criterion shows why it got its score and how to improve it, a question shows the comment, the stronger answer and your own exchange from the transcript (found with the question's number). The criterion names come from the rubric, sent in the session view. The graph reaches `END`. The API sets `sessions.ended_at` and returns `status: "done"` with the report, which the page or the CLI shows.
 
 ### The same turn, spoken
 
@@ -266,8 +270,8 @@ sequenceDiagram
   participant D as Deepgram
   participant G as Graph + Claude
   participant E as ElevenLabs
-  B->>B: you hold the button (or Space): MediaRecorder records
-  B->>A: release: POST /sessions/{id}/turn with the audio file
+  B->>B: you click the button (or press Space): MediaRecorder records
+  B->>A: click again: POST /sessions/{id}/turn with the audio file
   A->>D: the recording + language
   D-->>A: your words as text
   A->>G: Command(resume=text): evaluate_answer, then ask
@@ -523,7 +527,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **ORM**: a library (here SQLAlchemy) that maps database rows to Python objects.
 - **Prompt caching**: Claude reuses a prompt prefix it has just seen, so repeated system prompts are cheaper and faster.
 - **RAG (retrieval-augmented generation)**: searching your own documents for the relevant passages and adding them to the prompt, instead of sending everything every time.
-- **Push-to-talk**: you hold a button while you speak and release it when you're done, so the app knows exactly where your answer ends.
+- **Click-to-talk**: you click (or press Space) to start recording and again when you're done, so the app knows exactly where your answer ends, without having to guess from silences.
 - **Schema (Pydantic)**: a Python class describing the exact shape data must have.
 - **Speech-to-text (STT)** / **text-to-speech (TTS)**: turning a recording into text, and text into a voice.
 - **State**: the dictionary the graph carries from step to step.

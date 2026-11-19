@@ -4,14 +4,27 @@ app.js - the logic of the web page: talks to the API, records your voice, plays 
 How it works:
 - Every screen comes from a "view" the API returns (status + what the session is waiting for).
   render(view) shows the right panel: brief review, interview, or feedback.
-- Recording uses the browser's MediaRecorder: hold the button (or Space) to record, release to
-  send the audio to POST /sessions/{id}/turn. The reply holds what was heard, the next
-  question, its audio (base64) and how long each step took.
+- Setup is a 3-step form moved through from left to right: Next / Back, a swipe, a click on the
+  step bar, or Enter (goStep). Step 1 needs a company and a role before moving on.
+- Setup: "Your CV" lists your stored CV (GET /documents/cv) with a Delete button. A new CV (file
+  or pasted) replaces the stored one when "Replace my stored CV" is ticked: the old ones are
+  deleted after the new one is saved. Files go to POST /documents/upload, pasted text to
+  POST /documents.
+- Recording uses the browser's MediaRecorder: click the button (or press Space) to start, and
+  again to stop and send the audio to POST /sessions/{id}/turn (it also stops by itself after
+  5 minutes). The reply holds what was heard, the next question, its audio (base64) and how
+  long each step took.
 - Typed answers (Voice switched off) go to POST /sessions/{id}/resume, like the terminal CLI.
+- The transcript is grouped by question; "Based on N documents" folds open to show which of
+  your documents the interviewer drew on.
+- "End interview and get feedback" calls POST /sessions/{id}/end; "New interview" (top right)
+  goes back to the setup form, and the session it leaves stays saved.
+- The brief is a carousel: six numbered cards you scroll from left to right (carousel()).
+- The feedback shows the score, a carousel (in short, fix first, keep doing) and details you
+  click open: each rubric criterion (score bar -> why, and how to improve) and each question
+  (score -> comment, a stronger answer, and your own answer from the transcript).
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
-- Uploaded files go to POST /documents/upload; under each question the page shows which of your
-  documents the interviewer drew on ("Based on: ...").
 */
 
 const $ = (id) => document.getElementById(id);
@@ -21,9 +34,12 @@ const state = {
   view: null,
   voiceOn: true,
   recorder: null,   // MediaRecorder while recording
+  starting: false,  // the microphone is opening
   chunks: [],
   recordStart: 0,
+  autoStop: null,
   audio: null,      // the interviewer audio currently playing
+  storedCv: [],     // [{id, source, chars, chunks}] from GET /documents/cv
 };
 
 // ---------- small helpers ----------
@@ -46,18 +62,30 @@ function busy(text) {
   document.querySelectorAll("button").forEach((b) => (b.disabled = Boolean(text)));
 }
 
+// Builds an element: el("p", {class: "x"}, "text", otherElement, [moreChildren]).
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   Object.entries(attrs).forEach(([k, v]) => (k === "class" ? (node.className = v) : node.setAttribute(k, v)));
-  children.flat().forEach((c) => node.append(c instanceof Node ? c : document.createTextNode(String(c))));
+  children.flat().forEach((c) => {
+    if (c === null || c === undefined || c === false || c === "") return;
+    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  });
   return node;
 }
 
-function list(items) {
-  return el("ul", {}, (items && items.length ? items : ["(none)"]).map((i) => el("li", {}, i)));
+function list(items, ordered = false) {
+  return el(ordered ? "ol" : "ul", {}, (items && items.length ? items : ["(none)"]).map((i) => el("li", {}, i)));
 }
 
-// Calls the API and returns the JSON reply. Errors become a readable message.
+// 1-2 low (red), 3 mid (amber), 4-5 high (green)
+const level = (score) => (score <= 2 ? "low" : score === 3 ? "mid" : "high");
+
+function scoreBar(score) {
+  return el("span", { class: `bar ${level(score)}` },
+    [1, 2, 3, 4, 5].map((i) => el("span", { class: i <= score ? "on" : "" })));
+}
+
+// Calls the API and returns the JSON reply (null for "204 No Content"). Errors become a message.
 async function api(method, path, body, isForm = false) {
   const options = { method, headers: {} };
   if (body !== undefined) {
@@ -78,7 +106,7 @@ async function api(method, path, body, isForm = false) {
     err.status = res.status;
     throw err;
   }
-  return res.json();
+  return res.status === 204 ? null : res.json();
 }
 
 // Runs an action with a busy message, and shows any error.
@@ -124,6 +152,7 @@ async function speakCurrentQuestion() {
 
 function showPanel(name) {
   ["setup", "brief", "interview", "feedback"].forEach((p) => ($(`panel-${p}`).hidden = p !== name));
+  window.scrollTo({ top: 0 });
 }
 
 function render(view) {
@@ -131,69 +160,193 @@ function render(view) {
   state.sessionId = view.session_id;
   remember("sessionId", view.session_id);
   $("session-label").textContent = `Session ${view.session_id.slice(0, 8)}`;
+  $("leave").hidden = false;
   document.documentElement.lang = view.language || "en";
 
-  if (view.status === "done") return renderFeedback(view.final_feedback);
-  if (view.status === "stopped") {
-    showPanel("interview");
-    renderTranscript(view.transcript);
-    showError("A step failed. Press Retry to run it again.");
-    $("progress").textContent = "Stopped";
-    const retry = el("button", { class: "primary" }, "Retry");
-    retry.onclick = () => run("Retrying...", async () => render(await api("POST", `/sessions/${state.sessionId}/retry`)));
-    $("transcript").append(retry);
-    return;
-  }
+  if (view.status === "done") return renderFeedback(view);
+  if (view.status === "stopped") return renderStopped(view);
   if (view.pending.type === "review_brief") return renderBrief(view.pending.brief);
   renderInterview(view);
 }
 
-function renderBrief(b) {
-  showPanel("brief");
-  $("brief").replaceChildren(
-    el("h3", {}, "Company"), el("p", {}, b.company_summary),
-    el("h3", {}, "What the role needs"), list(b.role_requirements),
-    el("h3", {}, "Likely format"), el("p", {}, b.interview_format),
-    el("h3", {}, "Interviewers"), list(b.interviewers.map((i) => `${i.name} (${i.role}) ${i.notes}`.trim())),
-    el("h3", {}, "Gaps between your CV and the role"), list(b.cv_gaps),
-    el("h3", {}, "Focus areas"), list(b.focus_areas),
-    el("h3", {}, "Probable questions"), list(b.probable_questions),
-  );
+// --- carousel: a row of cards you scroll (or swipe) from left to right ---
+// cards: [{title, cls, content: [nodes]}]. Arrows move one card; dots show where you are.
+
+function carousel(cards) {
+  const track = el("div", { class: "carousel-track" },
+    cards.map((c, i) => el("article", { class: `slide ${c.cls || ""}` },
+      el("h3", {}, el("span", { class: "slide-no" }, i + 1), c.title), ...c.content)));
+  const dots = el("div", { class: "carousel-dots" }, cards.map(() => el("span")));
+  const slides = [...track.children];
+  let current = 0;
+
+  // Center card i in the track (its neighbours peek out on each side).
+  const goTo = (i) => {
+    const s = slides[Math.max(0, Math.min(slides.length - 1, i))];
+    track.scrollTo({ left: s.offsetLeft + s.offsetWidth / 2 - track.clientWidth / 2, behavior: "smooth" });
+  };
+  const step = (dir) => goTo(current + dir);
+  const prev = el("button", { type: "button", class: "btn btn-ghost arrow", "aria-label": "Previous" }, "‹");
+  const next = el("button", { type: "button", class: "btn btn-ghost arrow", "aria-label": "Next" }, "›");
+  prev.onclick = () => step(-1);
+  next.onclick = () => step(1);
+  slides.forEach((s, i) => s.addEventListener("click", () => { if (i !== current) goTo(i); }));
+
+  // The current card is the one whose middle is closest to the middle of the track.
+  const update = () => {
+    const middle = track.scrollLeft + track.clientWidth / 2;
+    current = slides.reduce((best, s, i) =>
+      Math.abs(s.offsetLeft + s.offsetWidth / 2 - middle) <
+      Math.abs(slides[best].offsetLeft + slides[best].offsetWidth / 2 - middle) ? i : best, 0);
+    slides.forEach((s, i) => s.classList.toggle("current", i === current));
+    [...dots.children].forEach((d, i) => d.classList.toggle("on", i === current));
+    prev.disabled = current === 0;
+    next.disabled = current === slides.length - 1;
+  };
+  track.addEventListener("scroll", () => requestAnimationFrame(update));
+  requestAnimationFrame(update);
+  const node = el("div", { class: "carousel" }, el("div", { class: "carousel-row" }, prev, track, next), dots);
+  node.step = step; // lets the keyboard arrows move this carousel
+  return node;
 }
 
+// Keyboard ← → move the brief's cards (when the brief is on screen and you are not typing).
+document.addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight"].includes(e.key) || $("panel-brief").hidden) return;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+  const c = $("brief").querySelector(".carousel");
+  if (c) { e.preventDefault(); c.step(e.key === "ArrowLeft" ? -1 : 1); }
+});
+
+// --- brief: six cards in reading order ---
+
+function renderBrief(b) {
+  showPanel("brief");
+  const people = b.interviewers.map((i) => `${i.name}, ${i.role}${i.notes ? ` (${i.notes})` : ""}`);
+  $("brief").replaceChildren(carousel([
+    { title: "Focus on", cls: "accent", content: [list(b.focus_areas)] },
+    { title: "The company", content: [el("p", {}, b.company_summary)] },
+    { title: "The interview", content: [el("p", {}, b.interview_format), people.length ? list(people) : ""] },
+    { title: "The role needs", content: [list(b.role_requirements)] },
+    { title: "Your gaps", cls: "warn", content: [list(b.cv_gaps)] },
+    { title: "Likely questions", content: [list(b.probable_questions, true)] },
+  ]));
+}
+
+// --- interview: the transcript grouped by question ---
+
 function renderTranscript(turns) {
-  $("transcript").replaceChildren(
-    ...turns.map((t) =>
-      el("div", { class: `line ${t.role}` },
-        el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You"), t.text,
-        t.sources && t.sources.length ? el("span", { class: "sources" }, `Based on: ${t.sources.join(", ")}`) : "")),
-  );
+  const nodes = [];
+  let lastQ = -1;
+  for (const t of turns) {
+    if (t.role === "interviewer" && t.q_index !== lastQ) {
+      nodes.push(el("div", { class: "q-divider" }, `Question ${t.q_index + 1}`));
+      lastQ = t.q_index;
+    }
+    const sources = t.sources && t.sources.length
+      ? el("details", { class: "sources" },
+          el("summary", {}, `Based on ${t.sources.length} document${t.sources.length > 1 ? "s" : ""}`),
+          list(t.sources))
+      : "";
+    nodes.push(el("div", { class: `line ${t.role}` },
+      el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You",
+        t.followup && t.role === "interviewer" ? el("span", { class: "tag" }, "follow-up") : ""),
+      el("p", {}, t.text),
+      sources));
+  }
+  $("transcript").replaceChildren(...nodes);
+  const box = $("transcript").parentElement;
+  box.scrollTop = box.scrollHeight; // wide screens: the conversation scrolls inside its panel
   $("transcript").lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function setProgress(qIndex, total, note) {
+  $("progress").textContent = total ? `Question ${Math.min(qIndex + 1, total)} of ${total}` : "Interview";
+  $("progress-fill").style.width = total ? `${Math.round((qIndex / total) * 100)}%` : "0";
+  $("progress-note").textContent = note || "";
 }
 
 function renderInterview(view) {
   showPanel("interview");
   const p = view.pending;
-  $("progress").textContent = p.followup
-    ? `Question ${p.q_index + 1} of ${p.total} · follow-up`
-    : `Question ${p.q_index + 1} of ${p.total}`;
+  setProgress(p.q_index, p.total, p.followup ? "Follow-up on this question" : "");
   renderTranscript(view.transcript);
   $("voice-controls").hidden = !state.voiceOn;
   $("text-controls").hidden = state.voiceOn;
+  $("end-interview").hidden = false;
 }
 
-function renderFeedback(fb) {
+function renderStopped(view) {
+  showPanel("interview");
+  setProgress(view.q_index || 0, view.total_questions, "A step failed");
+  renderTranscript(view.transcript);
+  $("voice-controls").hidden = true;
+  $("text-controls").hidden = true;
+  showError("A step failed (see the message above). Press Retry to run it again.");
+  const retry = el("button", { class: "btn btn-primary" }, "Retry");
+  retry.onclick = () => run("Retrying...", async () => render(await api("POST", `/sessions/${state.sessionId}/retry`)));
+  $("transcript").append(retry);
+}
+
+// --- feedback: overview on the left, clickable details on the right ---
+
+function exchangeFor(transcript, number) {
+  const turns = (transcript || []).filter((t) => t.q_index === number - 1);
+  if (!turns.length) return "";
+  return el("div", { class: "exchange" },
+    turns.map((t) => el("p", {}, el("strong", {}, t.role === "interviewer" ? "Interviewer: " : "You: "), t.text)));
+}
+
+function renderFeedback(view) {
   showPanel("feedback");
-  $("progress").textContent = "Done";
+  const fb = view.final_feedback;
+  const names = Object.fromEntries((view.rubric || []).map((c) => [c.id, c.name]));
+  const prettify = (id) => names[id] || id.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  const answered = new Set((view.transcript || []).filter((t) => t.role === "candidate").map((t) => t.q_index)).size;
+
+  // Top: the score, then the three key messages as cards you swipe through.
+  const overview = el("div", { class: "panel overview" },
+    el("div", { class: "score-head" },
+      el("div", { class: `score-big ${level(fb.overall_score)}` }, el("span", {}, fb.overall_score, el("small", {}, "/ 5"))),
+      el("div", {},
+        el("h2", {}, "Your feedback"),
+        view.ended_early
+          ? el("span", { class: "badge" }, `Ended early: ${answered} of ${view.total_questions} questions`)
+          : el("span", { class: "muted small" }, `${view.total_questions} questions`))),
+    carousel([
+      { title: "In short", content: [el("p", {}, fb.summary)] },
+      { title: "Fix first", cls: "accent", content: [list(fb.fixes, true)] },
+      { title: "Keep doing", cls: "good", content: [list(fb.strengths)] },
+    ]),
+  );
+
+  // Each criterion opens to: why this score, and how to raise it.
+  const rubric = fb.rubric_scores.map((s) =>
+    el("details", { class: "item" },
+      el("summary", {}, el("span", { class: "crit-name" }, prettify(s.criterion)), scoreBar(s.score),
+        el("span", { class: `num ${level(s.score)}` }, s.score)),
+      el("div", { class: "body" },
+        el("p", {}, el("span", { class: "label" }, "Why this score"), s.note),
+        s.improve && s.improve.length
+          ? el("div", { class: "improve" }, el("span", { class: "label" }, "How to improve"), list(s.improve))
+          : "")));
+
+  const questions = fb.per_question.map((q) =>
+    el("details", { class: "item" },
+      el("summary", {}, el("span", { class: `num ${level(q.score)}` }, q.score),
+        el("span", { class: "q-text" }, q.number ? `Q${q.number}. ${q.question}` : q.question)),
+      el("div", { class: "body" },
+        el("p", {}, el("span", { class: "label" }, "Comment"), q.comment),
+        q.better ? el("p", {}, el("span", { class: "label" }, "A stronger answer"), q.better) : "",
+        q.number ? el("span", { class: "label" }, "The exchange") : "",
+        q.number ? exchangeFor(view.transcript, q.number) : "")));
+
   $("feedback").replaceChildren(
-    el("p", {}, el("span", { class: "score" }, `Overall: ${fb.overall_score}/5`)),
-    el("p", {}, fb.summary),
-    el("h3", {}, "Rubric"),
-    list(fb.rubric_scores.map((s) => `${s.criterion}: ${s.score}/5 - ${s.note}`)),
-    el("h3", {}, "Question by question"),
-    list(fb.per_question.map((q) => `[${q.score}/5] ${q.question} - ${q.comment}`)),
-    el("h3", {}, "Strengths"), list(fb.strengths),
-    el("h3", {}, "Fixes for next time"), list(fb.fixes),
+    overview,
+    el("div", { class: "panel details" },
+      el("h2", {}, "Rubric"), el("p", { class: "hint muted small" }, "Click a criterion to see why, and how to improve it."), ...rubric,
+      el("h2", {}, "Question by question"), el("p", { class: "hint muted small" }, "Click a question to see the comment and your answer."),
+      ...questions),
   );
 }
 
@@ -201,7 +354,7 @@ function showTimings(t) {
   if (!t) return ($("timings").textContent = "");
   const s = (ms) => (ms === undefined ? "-" : `${(ms / 1000).toFixed(1)} s`);
   $("timings").textContent =
-    `Turn ${s(t.total)} = listening ${s(t.speech_to_text)} + interviewer ${s(t.interviewer)} + voice ${s(t.text_to_speech)}`;
+    `Last turn ${s(t.total)}: listening ${s(t.speech_to_text)}, interviewer ${s(t.interviewer)}, voice ${s(t.text_to_speech)}`;
 }
 
 // After a view that waits for an answer, say the question out loud (if voice is on).
@@ -212,25 +365,166 @@ async function afterView(view) {
   }
 }
 
-// ---------- setup ----------
+// ---------- setup: my CV ----------
+
+async function loadStoredCv() {
+  try {
+    state.storedCv = await api("GET", "/documents/cv");
+  } catch (_) {
+    state.storedCv = [];
+  }
+  const box = $("my-cv");
+  if (!state.storedCv.length) {
+    box.replaceChildren(el("p", { class: "muted small" }, "No CV stored yet: add one below."));
+  } else {
+    box.replaceChildren(...state.storedCv.map((d) => {
+      const del = el("button", { type: "button", class: "btn btn-danger btn-small" }, "Delete");
+      del.onclick = () => {
+        if (!confirm(`Delete the stored CV "${d.source}"?`)) return;
+        run("Deleting...", async () => {
+          await api("DELETE", `/documents/${d.id}`);
+          if (state.editing) state.editing.changed = true;
+          await loadStoredCv();
+          updateSubmitLabel();
+        });
+      };
+      return el("div", { class: "stored" },
+        el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · ${d.chunks} chunks`)), del);
+    }));
+  }
+  updateReplaceRow();
+}
+
+function updateReplaceRow() {
+  const f = $("setup-form");
+  const hasNew = ($("cv-file-input").files.length > 0) || f.elements.cv.value.trim();
+  $("replace-cv-row").hidden = !(hasNew && state.storedCv.length);
+}
+
+$("cv-file-input").addEventListener("change", updateReplaceRow);
+$("setup-form").elements.cv.addEventListener("input", updateReplaceRow);
+$("files-input").addEventListener("change", (e) => {
+  $("file-chips").replaceChildren(...[...e.target.files].map((file) => el("li", {}, file.name)));
+});
+
+// ---------- setup: the 3-step form (left to right) ----------
+// The steps sit side by side in #wizard-track; going to a step scrolls the track to it.
+// Swiping scrolls it too, and the scroll listener keeps the step bar and buttons in sync.
+
+const wizard = { step: 0, count: 3 };
+const WIZARD_HINTS = [
+  "Who the interview is with, and what kind.",
+  "The job post and what you know about the company: paste texts, add links or files.",
+  "Check your CV, then prepare your interview brief (about 30 s).",
+];
+
+function updateWizard() {
+  [...$("wizard-steps").children].forEach((li, i) => {
+    li.classList.toggle("active", i === wizard.step);
+    li.classList.toggle("done", i < wizard.step);
+  });
+  const last = wizard.step === wizard.count - 1;
+  $("wizard-back").style.visibility = wizard.step === 0 ? "hidden" : "visible";
+  $("wizard-next").hidden = last;
+  $("wizard-submit").hidden = !last;
+  $("wizard-hint").textContent = WIZARD_HINTS[wizard.step];
+}
+
+// The form is as tall as the step on screen (not the tallest one), so there is no empty space.
+function fitTrack() {
+  const step = $("wizard-track").children[wizard.step];
+  if (step && step.offsetHeight) $("wizard-track").style.height = `${step.offsetHeight}px`;
+}
+
+function goStep(i, smooth = true) {
+  wizard.step = Math.max(0, Math.min(wizard.count - 1, i));
+  const track = $("wizard-track");
+  track.scrollTo({ left: wizard.step * track.clientWidth, behavior: smooth ? "smooth" : "auto" });
+  updateWizard();
+  fitTrack();
+}
+
+// A step's height also changes when its content does (file chips, the stored CV list...).
+const stepResize = new ResizeObserver(fitTrack);
+[...$("wizard-track").children].forEach((s) => stepResize.observe(s));
+
+// Step 1 needs a company and a role before moving on.
+function stepOneValid() {
+  const f = $("setup-form").elements;
+  for (const name of ["company", "role"]) {
+    if (!f[name].value.trim()) {
+      goStep(0);                 // bring step 1 back into view
+      f[name].reportValidity();  // the browser's "Please fill out this field" bubble
+      return false;
+    }
+  }
+  return true;
+}
+
+function nextStep() {
+  if (wizard.step === 0 && !stepOneValid()) return;
+  goStep(wizard.step + 1);
+}
+
+$("wizard-next").addEventListener("click", nextStep);
+$("wizard-back").addEventListener("click", () => goStep(wizard.step - 1));
+[...$("wizard-steps").children].forEach((li, i) =>
+  li.addEventListener("click", () => { if (i <= wizard.step || stepOneValid()) goStep(i); }));
+
+// Swiping (or scrolling) the track moves to the step that is in view.
+$("wizard-track").addEventListener("scroll", () => {
+  const track = $("wizard-track");
+  const i = Math.round(track.scrollLeft / track.clientWidth);
+  if (i !== wizard.step) { wizard.step = i; updateWizard(); fitTrack(); }
+});
+window.addEventListener("resize", () => goStep(wizard.step, false));
+
+// Enter in a one-line field = Next (or "Write my brief" on the last step); Enter in a text area adds a line.
+$("setup-form").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.id === "resume-id") return;
+  e.preventDefault();
+  if (wizard.step < wizard.count - 1) nextStep();
+  else $("setup-form").requestSubmit($("wizard-submit"));
+});
+updateWizard();
+fitTrack();
+
+// ---------- setup: write my brief ----------
 
 $("setup-form").addEventListener("submit", (e) => {
   e.preventDefault();
+  if (wizard.step < wizard.count - 1) return nextStep();
+  if (!stepOneValid()) return;
   const f = new FormData(e.target);
   const job = f.get("job_post").trim(), notes = f.get("notes").trim(), cv = f.get("cv").trim();
+  const links = f.get("links").split(/\s+/).map((s) => s.trim()).filter(Boolean);
   const files = f.getAll("files").filter((file) => file.size), cvFile = f.get("cv_file");
   const hasCvFile = cvFile && cvFile.size;
-  if (!job && !notes && !cv && !files.length && !hasCvFile) {
-    return showError("Add at least one document: the job post, notes, a file or your CV.");
+  const replaceCv = f.get("replace_cv") === "on";
+  if (state.editing && !editingChanged()) {
+    const { sessionId } = state.editing;
+    return run("Back to your brief...", async () => {
+      const view = await api("GET", `/sessions/${sessionId}`);
+      state.editing = null;
+      clearDraft();
+      render(view);
+    });
+  }
+  const alreadyAdded = state.editing ? $("existing-docs").children.length : 0;
+  if (!job && !notes && !links.length && !files.length && !cv && !hasCvFile && !state.storedCv.length && !alreadyAdded) {
+    return showError("Add at least one thing to read: the job post, a link, notes, a file or your CV.");
   }
 
-  run("Reading your documents and writing the brief (about 30 s)...", async () => {
-    const interview = await api("POST", "/interviews", {
-      company: f.get("company"), role: f.get("role"), mode: f.get("mode"), language: f.get("language"),
-    });
-    if (cv) await api("POST", "/documents", { doc_type: "cv", source: "pasted CV", text: cv });
-    if (job) await api("POST", "/documents", { interview_id: interview.id, doc_type: "job_post", source: "pasted job post", text: job });
-    if (notes) await api("POST", "/documents", { interview_id: interview.id, doc_type: "notes", source: "pasted notes", text: notes });
+  run("Reading everything and preparing your interview brief (about 30 s)...", async () => {
+    const fields = { company: f.get("company"), role: f.get("role"), mode: f.get("mode"), language: f.get("language") };
+    const editing = state.editing;
+    let interview;
+    if (editing) {
+      // Back from a brief: update the same interview instead of creating a new one.
+      interview = await api("PATCH", `/interviews/${editing.interviewId}`, fields);
+    } else {
+      interview = await api("POST", "/interviews", fields);
+    }
     // Files are read on the server (PDF, Word, .eml), then cut into chunks and embedded.
     const upload = async (file, fields) => {
       const form = new FormData();
@@ -239,17 +533,54 @@ $("setup-form").addEventListener("submit", (e) => {
       const doc = await api("POST", "/documents/upload", form, true);
       if (doc.embedding_error) showError(`${file.name} was saved but not indexed: ${doc.embedding_error}`);
     };
-    if (hasCvFile) await upload(cvFile, { doc_type: "cv" });
+
+    // A new CV, then (if asked) remove the old ones, so only the new one is used.
+    const oldCvIds = state.storedCv.map((d) => d.id);
+    let newCv = false;
+    if (hasCvFile) { await upload(cvFile, { doc_type: "cv" }); newCv = true; }
+    if (cv) { await api("POST", "/documents", { doc_type: "cv", source: "pasted CV", text: cv }); newCv = true; }
+    if (newCv && replaceCv) for (const id of oldCvIds) await api("DELETE", `/documents/${id}`);
+
+    // Pasted job post and notes. When editing, an unchanged text is kept as it is (no need to
+    // index it again); a changed or emptied one replaces the old document.
+    for (const [docType, text, source] of [["job_post", job, "pasted job post"], ["notes", notes, "pasted notes"]]) {
+      const old = editing && editing.pasted[docType];
+      if (old && old.text.trim() === text) continue;
+      if (old) await api("DELETE", `/documents/${old.id}`);
+      if (text) await api("POST", "/documents", { interview_id: interview.id, doc_type: docType, source, text });
+    }
     for (const file of files) await upload(file, { interview_id: interview.id });
+
+    // Links: the server reads each page. A page that cannot be read does not stop the brief;
+    // it is listed so you can paste its text instead.
+    const failed = [];
+    for (const url of links) {
+      try {
+        const doc = await api("POST", "/documents/from-url", { interview_id: interview.id, url });
+        if (doc.embedding_error) failed.push(`${url} was read but not indexed: ${doc.embedding_error}`);
+      } catch (err) {
+        failed.push(err.message);
+      }
+    }
+    if (links.length) $("setup-form").elements.links.value = "";
+
     const questions = Number(f.get("questions")) || null;
-    render(await api("POST", `/interviews/${interview.id}/sessions`, { num_questions: questions }));
+    const view = await api("POST", `/interviews/${interview.id}/sessions`, { num_questions: questions });
+    state.editing = null;
+    clearDraft();
+    render(view);
+    if (failed.length) showError(`Some links could not be read: ${failed.join(" · ")}`);
   });
 });
 
-$("resume-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const id = new FormData(e.target).get("session_id").trim();
+function resumeById() {
+  const id = $("resume-id").value.trim();
+  if (!id) return showError("Paste a session id first.");
   run("Loading the session...", async () => render(await api("GET", `/sessions/${id}`)));
+}
+$("resume").addEventListener("click", resumeById);
+$("resume-id").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); resumeById(); } // don't submit the setup form
 });
 
 // ---------- brief review ----------
@@ -269,10 +600,13 @@ $("revise").addEventListener("click", () => {
 
 // ---------- interview: voice ----------
 
+const MAX_RECORDING_MS = 5 * 60 * 1000; // safety net: an answer is sent after 5 minutes
+
 async function startRecording() {
-  if (state.recorder || $("talk").disabled) return;
+  if (state.recorder || state.starting || $("talk").disabled) return;
   if (state.audio) state.audio.pause(); // stop the interviewer talking over you
   showError("");
+  state.starting = true; // the microphone takes a moment to open; ignore clicks meanwhile
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     state.chunks = [];
@@ -281,11 +615,14 @@ async function startRecording() {
     state.recorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
     state.recorder.start();
     state.recordStart = Date.now();
+    state.autoStop = setTimeout(stopRecording, MAX_RECORDING_MS);
     $("talk").classList.add("recording");
-    $("talk").textContent = "Listening...";
+    $("talk").textContent = "Stop and send";
   } catch (err) {
     state.recorder = null;
-    showError(`Microphone unavailable: ${err.message}. Allow the microphone for localhost, or switch Voice off.`);
+    showError(`Microphone unavailable: ${err.message}. Allow the microphone for localhost, or switch voice off.`);
+  } finally {
+    state.starting = false;
   }
 }
 
@@ -293,11 +630,12 @@ function stopRecording() {
   const recorder = state.recorder;
   if (!recorder) return;
   state.recorder = null;
+  clearTimeout(state.autoStop);
   $("talk").classList.remove("recording");
-  $("talk").textContent = "Hold to talk";
+  $("talk").textContent = "Start answering";
 
   recorder.addEventListener("stop", () => {
-    if (Date.now() - state.recordStart < 400) return showError("That was too short. Hold the button while you speak.");
+    if (Date.now() - state.recordStart < 400) return showError("That was too short. Start, give your answer, then stop.");
     const blob = new Blob(state.chunks, { type: recorder.mimeType });
     const form = new FormData();
     form.append("audio", blob, `answer.${recorder.mimeType.includes("ogg") ? "ogg" : recorder.mimeType.includes("mp4") ? "mp4" : "webm"}`);
@@ -312,21 +650,24 @@ function stopRecording() {
   recorder.stop();
 }
 
-const talk = $("talk");
-talk.addEventListener("pointerdown", (e) => { e.preventDefault(); startRecording(); });
-talk.addEventListener("pointerup", stopRecording);
-talk.addEventListener("pointerleave", stopRecording);
-talk.addEventListener("pointercancel", stopRecording);
+// One click (or one press of Space) starts recording; the next one stops and sends the answer.
+function toggleRecording() {
+  if (state.recorder) stopRecording();
+  else startRecording();
+}
 
-// Space bar = push-to-talk, unless you are typing in a field.
+$("talk").addEventListener("click", toggleRecording);
+
+// Space bar does the same, unless you are typing in a field.
 const typing = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+const spaceIsOurs = () => !typing() && !$("panel-interview").hidden && state.voiceOn && !$("voice-controls").hidden;
 document.addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || e.repeat || typing() || $("panel-interview").hidden || !state.voiceOn) return;
-  e.preventDefault();
-  startRecording();
+  if (e.code !== "Space" || !spaceIsOurs()) return;
+  e.preventDefault(); // no page scroll, and no "click" on whichever button has the focus
+  if (!e.repeat) toggleRecording();
 });
 document.addEventListener("keyup", (e) => {
-  if (e.code === "Space" && state.recorder) { e.preventDefault(); stopRecording(); }
+  if (e.code === "Space" && spaceIsOurs()) e.preventDefault();
 });
 
 $("replay").addEventListener("click", () => run("Getting the voice...", speakCurrentQuestion));
@@ -352,24 +693,188 @@ $("text-controls").addEventListener("submit", (e) => {
   });
 });
 
-// ---------- start ----------
+// ---------- end, leave, start ----------
 
-$("new-interview").addEventListener("click", () => {
+// Stop now and get feedback on the answers given so far.
+$("end-interview").addEventListener("click", () => {
+  if (!confirm("End the interview now and get feedback on your answers so far?")) return;
+  if (state.recorder) { // drop an unfinished recording without sending it
+    clearTimeout(state.autoStop);
+    state.recorder.stop();
+    state.recorder = null;
+    $("talk").classList.remove("recording");
+    $("talk").textContent = "Start answering";
+  }
+  run("Writing your feedback (about 30 s)...", async () =>
+    render(await api("POST", `/sessions/${state.sessionId}/end`)));
+});
+
+// --- the setup form's draft: what you typed is kept in this browser, so a reload never empties it ---
+
+const DRAFT_FIELDS = ["company", "role", "mode", "language", "questions", "job_post", "notes", "links", "cv"];
+
+function saveDraft() {
+  const f = $("setup-form").elements;
+  remember("setupDraft", JSON.stringify(Object.fromEntries(DRAFT_FIELDS.map((n) => [n, f[n].value]))));
+}
+function restoreDraft() {
+  let draft = null;
+  try { draft = JSON.parse(recall("setupDraft") || "null"); } catch (_) {}
+  if (!draft) return;
+  const f = $("setup-form").elements;
+  DRAFT_FIELDS.forEach((n) => { if (draft[n] !== undefined) f[n].value = draft[n]; });
+}
+function clearDraft() { remember("setupDraft", null); }
+
+// After going back from a brief: has anything the brief depends on changed since?
+// Nothing changed -> "Back to my brief" keeps the same brief instead of writing a new one.
+function editingChanged() {
+  const ed = state.editing;
+  if (!ed) return true;
+  const f = $("setup-form").elements;
+  if (ed.changed) return true; // a document or CV was removed
+  if (["company", "role", "mode", "language", "questions"].some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
+  for (const docType of ["job_post", "notes"]) {
+    if (f[docType].value.trim() !== ((ed.pasted[docType] && ed.pasted[docType].text) || "").trim()) return true;
+  }
+  if (f.links.value.trim() || f.cv.value.trim()) return true;
+  if ($("files-input").files.length || $("cv-file-input").files.length) return true;
+  return false;
+}
+
+function updateSubmitLabel() {
+  $("wizard-submit").textContent = state.editing && !editingChanged()
+    ? "Back to my brief ›"
+    : "Prepare my interview brief ›";
+}
+
+$("setup-form").addEventListener("input", (e) => { if (e.target.type !== "file") saveDraft(); updateSubmitLabel(); });
+$("setup-form").addEventListener("change", (e) => { if (e.target.type !== "file") saveDraft(); updateSubmitLabel(); });
+
+// --- going to the setup form ---
+
+// The documents already stored for the interview being edited (uploaded files), each removable.
+function renderExistingDocs(docs) {
+  $("existing-docs").replaceChildren(...docs.map((d) => {
+    const del = el("button", { type: "button", class: "btn btn-danger btn-small" }, "Remove");
+    del.onclick = () => {
+      if (!confirm(`Remove "${d.source}" from this interview?`)) return;
+      run("Removing...", async () => {
+        await api("DELETE", `/documents/${d.id}`);
+        if (state.editing) state.editing.changed = true;
+        renderExistingDocs(docs.filter((x) => x.id !== d.id));
+        updateSubmitLabel();
+      });
+    };
+    return el("div", { class: "stored" },
+      el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · already added · ${d.chunks} chunks`)), del);
+  }));
+}
+
+function showSetup(step) {
+  updateSubmitLabel();
+  if (state.audio) state.audio.pause();
+  $("timings").textContent = "";
+  $("editing-banner").hidden = !state.editing;
+  showError("");
+  showPanel("setup");
+  goStep(step, false);
+  loadStoredCv();
+}
+
+// A brand-new interview: empty form, no session.
+function goToSetup() {
   remember("sessionId", null);
   state.sessionId = null;
+  state.view = null;
+  state.editing = null;
   $("session-label").textContent = "";
-  showPanel("setup");
+  $("leave").hidden = true;
+  $("setup-form").reset();
+  $("file-chips").replaceChildren();
+  renderExistingDocs([]);
+  clearDraft();
+  showSetup(0);
+}
+
+$("new-interview").addEventListener("click", goToSetup);
+
+// From the brief: back to the setup form, filled in from the server (company, role, type,
+// language, pasted texts, files already added). The session and its brief are kept: "Return to
+// the brief" goes back to it unchanged; "Write my brief" updates this same interview.
+$("brief-back").addEventListener("click", () => {
+  const view = state.view;
+  run("Loading your documents...", async () => {
+    const iv = await api("GET", `/interviews/${view.interview_id}`);
+    const f = $("setup-form").elements;
+    f.company.value = iv.company;
+    f.role.value = iv.role;
+    f.mode.value = iv.mode;
+    f.language.value = iv.language;
+    f.job_post.value = "";
+    f.notes.value = "";
+    const pasted = {};
+    for (const d of iv.documents) {
+      if (d.pasted && (d.doc_type === "job_post" || d.doc_type === "notes") && !pasted[d.doc_type]) {
+        pasted[d.doc_type] = { id: d.id, text: d.text || "" };
+        f[d.doc_type].value = d.text || "";
+      }
+    }
+    renderExistingDocs(iv.documents.filter((d) => !pasted[d.doc_type] || pasted[d.doc_type].id !== d.id));
+    state.editing = {
+      interviewId: iv.id, sessionId: view.session_id, pasted, changed: false,
+      // what the brief was based on, to tell later whether anything changed
+      original: { company: iv.company, role: iv.role, mode: iv.mode, language: iv.language, questions: f.questions.value },
+    };
+    saveDraft();
+    showSetup(2);
+  });
 });
+
+// Back to the brief that was waiting, unchanged.
+$("back-to-brief").addEventListener("click", () => {
+  const { sessionId } = state.editing;
+  run("Loading the brief...", async () => render(await api("GET", `/sessions/${sessionId}`)));
+});
+
+// Leave the current interview for a new one. An unfinished one stays saved under its id.
+$("leave").addEventListener("click", () => {
+  const unfinished = state.view && state.view.status !== "done";
+  if (unfinished && !confirm(
+    `Leave this interview? It stays saved: continue it later with the session id\n${state.sessionId}`)) return;
+  goToSetup();
+});
+
+// Light / dark: the button shows the theme you would switch to. Until you click it, the page
+// follows the system setting; your choice is then remembered in this browser.
+function currentTheme() {
+  return document.documentElement.dataset.theme
+    || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+function updateThemeButton() {
+  $("theme").textContent = currentTheme() === "dark" ? "Light mode" : "Dark mode";
+}
+$("theme").addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  remember("theme", next);
+  updateThemeButton();
+});
+updateThemeButton();
 
 state.voiceOn = recall("voiceOff") !== "1";
 $("voice-toggle").checked = state.voiceOn;
 
-// Continue the last session of this browser, if there is one; otherwise show the setup form.
+// Continue the last session of this browser, if there is one; otherwise show the setup form,
+// with the draft you were typing.
+restoreDraft();
 const saved = recall("sessionId");
 if (saved) {
   busy("Loading your last session...");
   api("GET", `/sessions/${saved}`)
     .then(render)
-    .catch(() => { remember("sessionId", null); showPanel("setup"); })
+    .catch(() => { remember("sessionId", null); showSetup(0); })
     .finally(() => busy(""));
+} else {
+  loadStoredCv();
 }

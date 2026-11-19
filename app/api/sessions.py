@@ -4,6 +4,7 @@
 - GET  /sessions/{id}             what the session is waiting for (or the final feedback)
 - POST /sessions/{id}/resume      sends your reply to the pause: a brief decision or an answer
 - POST /sessions/{id}/retry       re-runs a step that failed (e.g. a Claude error)
+- POST /sessions/{id}/end         ends the interview early: feedback on the answers given so far
 - POST /sessions/{id}/turn        voice: your recorded answer in, the next question as audio out
 - POST /sessions/{id}/speak       voice: the current question as audio (first question, replay)
 
@@ -36,6 +37,7 @@ from sqlalchemy.orm import Session as DB
 from app.config import get_settings
 from app.db.models import Document, Interview, Session
 from app.db.session import get_db
+from app.graph import prompts
 from app.graph.schemas import InterviewBrief
 from app.llm import LLMError
 from app.voice import SpeechError
@@ -100,6 +102,12 @@ def _view(graph, session: Session) -> dict:
         "q_index": values.get("q_index"),
         "total_questions": len(values.get("questions") or []),
         "language": values.get("language", "en"),
+        "ended_early": bool(values.get("ended_early")),
+        # Readable criterion names for the page ("ownership" -> "Personal contribution")
+        "rubric": [
+            {"id": c["id"], "name": c["name"]}
+            for c in prompts.load_rubric(values["mode"])["criteria"]
+        ] if values.get("mode") else [],
         "transcript": values.get("transcript") or [],
         "final_feedback": values.get("final_feedback"),
     }
@@ -205,6 +213,20 @@ def retry_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_
     return _run(graph, session, None, db)
 
 
+@router.post("/sessions/{session_id}/end")
+def end_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> dict:
+    """Stop now and get the final feedback on the questions answered so far."""
+    graph = request.app.state.graph
+    session = _get_session(db, session_id)
+    snapshot = graph.get_state(_config(session))
+    pending = _pending(snapshot)
+    if not pending or pending["type"] != "answer":
+        raise HTTPException(409, "The interview can only be ended while it waits for an answer")
+    if not (snapshot.values or {}).get("evaluations"):
+        raise HTTPException(409, "Answer at least one question first, or start a new interview to leave this one")
+    return _run(graph, session, Command(resume={"end": True}), db)
+
+
 # ---------- voice ----------
 
 def _language(graph, session: Session) -> str:
@@ -270,7 +292,7 @@ def _voice_turn(graph, session: Session, audio: bytes, mime_type: str, db: DB) -
         raise HTTPException(502, f"Speech-to-text failed: {exc}")
     timings["speech_to_text"] = round((perf_counter() - start) * 1000)
     if not heard["text"]:
-        raise HTTPException(422, "No speech recognised. Hold the button while you speak, then try again.")
+        raise HTTPException(422, "No speech recognised. Start recording, give your answer, then stop and try again.")
 
     # 2. The graph scores the answer and picks the next question (same as a typed answer).
     t = perf_counter()

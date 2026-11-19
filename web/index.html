@@ -4,10 +4,19 @@ index.html - the one web page of the app: set up an interview, review the brief,
 Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the web/ folder).
 The page only shows things and sends requests to the API; app.js holds the logic and
 style.css the look. There are four panels, and app.js shows one at a time:
-  1. setup     - describe the interview, paste or upload the documents, or continue a session
-  2. brief     - read the Interview Brief, approve it or ask for changes
-  3. interview - hold the button (or Space) to answer out loud, or switch to typing
-  4. feedback  - the final scored report
+  1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
+                 the step bar): the interview, the company and the job (texts, links, files),
+                 your CV, then "Prepare my interview brief".
+                 "Your CV" shows the stored CV with a Delete button; a folded box continues a session
+  2. brief     - the Interview Brief as six cards shown one at a time (round arrows, or the
+                 keyboard arrows); approve it, ask for changes, or go back to the documents
+  3. interview - the conversation on the left, the controls on the right (stacked on a phone):
+                 click "Start answering" (or press Space), again to send; or switch Voice off and
+                 type; "End interview and get feedback" stops early
+  4. feedback  - an overview (score, summary, top fixes) and clickable details per criterion
+                 and per question
+"New interview" (top right) goes back to the setup form at any time; the button next to it
+switches between light and dark colors.
 No build step and no framework: edit a file, reload the page.
 -->
 <!doctype html>
@@ -16,12 +25,20 @@ No build step and no framework: edit a file, reload the page.
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Interview Practice</title>
+  <script>
+    // Apply the saved light / dark choice before the page is drawn, so it never flashes.
+    try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (_) {}
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
     <h1>Interview Practice</h1>
-    <span id="session-label" class="muted"></span>
+    <span class="top-right">
+      <span id="session-label" class="muted small"></span>
+      <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
+      <button id="theme" type="button" class="btn btn-ghost btn-small theme-toggle" title="Switch light / dark">Light</button>
+    </span>
   </header>
 
   <main>
@@ -29,89 +46,154 @@ No build step and no framework: edit a file, reload the page.
     <p id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">Working...</span></p>
 
     <!-- 1. Setup -->
-    <section id="panel-setup" class="panel">
-      <h2>New interview</h2>
-      <form id="setup-form">
-        <div class="row">
-          <label>Company <input name="company" required placeholder="Northwind Logistics"></label>
-          <label>Role <input name="role" required placeholder="Senior Backend Engineer"></label>
+    <section id="panel-setup">
+      <form id="setup-form" class="panel wizard">
+        <!-- Shown when you came back here from a brief: you can return to it unchanged -->
+        <div id="editing-banner" class="editing" hidden>
+          <span>You are changing the information of an interview. Its brief is kept until you prepare it again.</span>
+          <button id="back-to-brief" type="button" class="btn btn-primary btn-small">Return to the brief ›</button>
         </div>
-        <div class="row">
-          <label>Interview type
-            <select name="mode">
-              <option value="behavioral">Behavioral / HR</option>
-              <option value="job_post">Tailored to the job post</option>
-              <option value="technical_backend">Technical backend</option>
-              <option value="system_design">System design</option>
-            </select>
-          </label>
-          <label>Language
-            <select name="language">
-              <option value="en">English</option>
-              <option value="fr">Français</option>
-              <option value="es">Español</option>
-            </select>
-          </label>
-          <label>Questions <input name="questions" type="number" min="1" max="15" value="5"></label>
+
+        <!-- Step bar: where you are; click a step to go back to it -->
+        <ol class="wizard-steps" id="wizard-steps">
+          <li data-step="0"><span class="step-no">1</span> The interview</li>
+          <li data-step="1"><span class="step-no">2</span> The company and the job</li>
+          <li data-step="2"><span class="step-no">3</span> Your CV</li>
+        </ol>
+
+        <!-- The three steps sit side by side; the track scrolls (or is swiped) to one at a time -->
+        <div class="wizard-track" id="wizard-track">
+        <div class="step">
+          <h2><span class="step-no">1</span> The interview</h2>
+          <div class="row">
+            <label>Company <input name="company" required placeholder="Northwind Logistics"></label>
+            <label>Role <input name="role" required placeholder="Senior Backend Engineer"></label>
+          </div>
+          <div class="row">
+            <label>Interview type
+              <select name="mode">
+                <option value="behavioral">Behavioral / HR</option>
+                <option value="job_post">Tailored to the job post</option>
+                <option value="technical_backend">Technical backend</option>
+                <option value="system_design">System design</option>
+              </select>
+            </label>
+            <label>Language
+              <select name="language">
+                <option value="en">English</option>
+                <option value="fr">Français</option>
+                <option value="es">Español</option>
+              </select>
+            </label>
+            <label>Questions <input name="questions" type="number" min="1" max="15" value="5"></label>
+          </div>
         </div>
-        <label>Job post <textarea name="job_post" rows="6" placeholder="Paste the job post"></textarea></label>
-        <label>Recruiter emails or notes <span class="muted">(optional)</span>
-          <textarea name="notes" rows="4" placeholder="Paste emails, notes from a call..."></textarea></label>
-        <label>Files <span class="muted">(optional: job post, emails, notes as PDF, Word, .eml or text)</span>
-          <input type="file" name="files" multiple accept=".pdf,.docx,.eml,.txt,.md"></label>
-        <label>Your CV <span class="muted">(optional; stored once and used for every interview)</span>
-          <textarea name="cv" rows="4" placeholder="Paste your CV as text, or leave empty if already added"></textarea></label>
-        <label>Or your CV as a file <input type="file" name="cv_file" accept=".pdf,.docx,.txt,.md"></label>
-        <button type="submit" class="primary">Write my brief</button>
+
+        <div class="step">
+          <h2><span class="step-no">2</span> The company and the job</h2>
+          <label>Job post <span class="muted">(the full text)</span>
+            <textarea name="job_post" rows="5" placeholder="Paste the whole job post: role, team, requirements, process..."></textarea></label>
+          <label>Links <span class="muted">(optional, one per line: the job post, the company's website or "about" page)</span>
+            <textarea name="links" rows="2" placeholder="https://company.com/careers/ai-product-builder&#10;https://company.com/about"></textarea>
+            <span class="muted small">The pages are read for you. Some sites need a login (LinkedIn often does): if a link fails, paste its text above.</span></label>
+          <label>Recruiter emails or notes <span class="muted">(optional)</span>
+            <textarea name="notes" rows="3" placeholder="Paste emails, notes from a call..."></textarea></label>
+          <label>Files <span class="muted">(optional: PDF, Word, .eml or text)</span>
+            <input type="file" name="files" id="files-input" multiple accept=".pdf,.docx,.eml,.txt,.md"></label>
+          <ul id="file-chips" class="chips"></ul>
+          <div id="existing-docs" class="existing-docs"></div>
+        </div>
+
+        <div class="step">
+          <h2><span class="step-no">3</span> Your CV <span class="muted small">used for every interview</span></h2>
+          <div id="my-cv" class="my-cv"></div>
+          <label>New CV as a file <input type="file" name="cv_file" id="cv-file-input" accept=".pdf,.docx,.txt,.md"></label>
+          <label>Or paste it <textarea name="cv" rows="3" placeholder="Paste your CV as text"></textarea></label>
+          <label class="check" id="replace-cv-row" hidden>
+            <input type="checkbox" name="replace_cv" checked> Replace my stored CV with this one
+          </label>
+        </div>
+
+        </div>
+
+        <!-- Back / Next; on the last step Next becomes "Prepare my interview brief" -->
+        <div class="wizard-nav">
+          <button id="wizard-back" type="button" class="btn btn-ghost">‹ Back</button>
+          <p id="wizard-hint" class="muted small"></p>
+          <button id="wizard-next" type="button" class="btn btn-primary">Next ›</button>
+          <button id="wizard-submit" type="submit" class="btn btn-primary" hidden>Prepare my interview brief ›</button>
+        </div>
       </form>
 
-      <h2>Continue a session</h2>
-      <form id="resume-form" class="inline">
-        <input name="session_id" placeholder="Session id" required>
-        <button type="submit">Continue</button>
-      </form>
+      <details class="resume panel">
+        <summary>Or continue an earlier session</summary>
+        <div class="inline">
+          <input id="resume-id" placeholder="Session id, e.g. 8ac19f5b-679c-4d95-8591-ed81ca89a955">
+          <button id="resume" type="button" class="btn btn-ghost">Continue</button>
+        </div>
+      </details>
     </section>
 
     <!-- 2. Brief review -->
     <section id="panel-brief" class="panel" hidden>
-      <h2>Your Interview Brief</h2>
-      <div id="brief"></div>
-      <div class="actions">
-        <button id="approve" class="primary">Approve and start the interview</button>
+      <div class="panel-head">
+        <button id="brief-back" type="button" class="btn btn-ghost">‹ Back to my documents</button>
+        <h2>Your Interview Brief</h2>
+        <span class="muted small">Use the arrows (or ← →) to go through the cards</span>
       </div>
-      <label>Or ask for changes
+      <div id="brief"></div>
+      <div class="center">
+        <button id="approve" class="btn btn-primary btn-wide">Approve and start the interview</button>
+      </div>
+      <details class="ask-changes">
+        <summary>Ask for changes</summary>
         <textarea id="brief-feedback" rows="3" placeholder="e.g. The interviewer is the CTO, not the engineering manager"></textarea>
-      </label>
-      <button id="revise">Rewrite the brief</button>
+        <button id="revise" class="btn btn-ghost">Rewrite the brief</button>
+      </details>
     </section>
 
     <!-- 3. Interview -->
-    <section id="panel-interview" class="panel" hidden>
-      <div class="interview-head">
-        <h2 id="progress">Question 1</h2>
-        <label class="toggle"><input type="checkbox" id="voice-toggle" checked> Voice</label>
+    <section id="panel-interview" hidden>
+      <div class="interview-layout">
+        <div class="panel conversation">
+          <div id="transcript" class="transcript"></div>
+        </div>
+
+        <aside class="panel side">
+          <div class="progress-block">
+            <h2 id="progress">Question 1 of 5</h2>
+            <div class="progress-bar"><div id="progress-fill"></div></div>
+            <span id="progress-note" class="muted small"></span>
+          </div>
+
+          <label class="toggle"><input type="checkbox" id="voice-toggle" checked> Answer by voice</label>
+
+          <div id="voice-controls" class="controls">
+            <button id="talk" class="btn talk" type="button">Start answering</button>
+            <p class="muted small">Click (or press <kbd>Space</kbd>) to start, again to send your answer.</p>
+            <button id="replay" type="button" class="btn btn-ghost">Replay the question</button>
+          </div>
+
+          <form id="text-controls" class="controls" hidden>
+            <textarea id="typed-answer" rows="6" placeholder="Type your answer"></textarea>
+            <button type="submit" class="btn btn-primary">Send answer</button>
+          </form>
+
+          <div class="end-row">
+            <button id="end-interview" type="button" class="btn btn-success">End interview and get feedback</button>
+          </div>
+
+          <p id="timings" class="muted small"></p>
+        </aside>
       </div>
-      <div id="transcript" class="transcript"></div>
-
-      <div id="voice-controls" class="controls">
-        <button id="talk" class="talk" type="button">Hold to talk</button>
-        <p class="muted">Hold the button, or hold <kbd>Space</kbd>, while you answer. Release to send.</p>
-        <button id="replay" type="button">Replay the question</button>
-      </div>
-
-      <form id="text-controls" class="controls" hidden>
-        <textarea id="typed-answer" rows="4" placeholder="Type your answer"></textarea>
-        <button type="submit" class="primary">Send answer</button>
-      </form>
-
-      <p id="timings" class="muted small"></p>
     </section>
 
     <!-- 4. Feedback -->
-    <section id="panel-feedback" class="panel" hidden>
-      <h2>Your feedback</h2>
-      <div id="feedback"></div>
-      <button id="new-interview">Back to start</button>
+    <section id="panel-feedback" hidden>
+      <div id="feedback" class="feedback-layout"></div>
+      <div class="center">
+        <button id="new-interview" class="btn btn-primary">Practise again</button>
+      </div>
     </section>
   </main>
 

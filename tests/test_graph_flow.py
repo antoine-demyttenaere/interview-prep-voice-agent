@@ -9,6 +9,8 @@ them inside nodes.py) and returns fixed answers; it asks for a follow-up wheneve
 - test_approved_brief_skips_prepare: a new session reuses an already-approved brief.
 - test_api_session_survives_restart: through the HTTP API and the real Postgres checkpointer;
   a fresh app instance resumes the session where it stopped.
+- test_language_reaches_the_prompts: a French interview asks Claude for French.
+- test_end_early_* / test_end_endpoint: ending early gives feedback on the answers so far.
 
     docker compose exec api pytest -q
 """
@@ -110,3 +112,35 @@ def test_language_reaches_the_prompts(fake):
     assert "write the brief in French" in fake.systems[0]
     assert "The interview is in French" in fake.systems[1]
 
+
+
+def test_end_early_gives_feedback_on_answers_so_far(fake):
+    """Ending skips the remaining questions and goes straight to the final feedback."""
+    graph = build_graph().compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t4"}}
+    graph.invoke(_initial(brief=BRIEF.model_dump(), brief_approved=True), config)
+    graph.invoke(Command(resume="good"), config)  # Q1 answered, Q2 is asked
+    graph.invoke(Command(resume={"end": True}), config)  # end instead of answering Q2
+
+    values = graph.get_state(config).values
+    assert values["ended_early"] is True
+    assert values["final_feedback"] is not None
+    assert len(values["evaluations"]) == 1
+    assert values["transcript"][-1]["role"] == "candidate"  # the unanswered Q2 was dropped
+    assert _pending(graph, config) is None
+
+
+def test_end_endpoint(fake):
+    """POST /end: refused before any answer, then gives the feedback."""
+    from app.main import app
+
+    with TestClient(app) as client:
+        iv = client.post("/interviews", json={"company": f"Fake {uuid.uuid4().hex[:6]}", "role": "Eng"}).json()
+        client.post("/documents", json={"interview_id": iv["id"], "doc_type": "job_post", "text": "Python"})
+        sid = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 3}).json()["session_id"]
+        assert client.post(f"/sessions/{sid}/end").status_code == 409  # still at the brief review
+        client.post(f"/sessions/{sid}/resume", json={"value": {"action": "approve"}})
+        assert client.post(f"/sessions/{sid}/end").status_code == 409  # no answer yet
+        client.post(f"/sessions/{sid}/resume", json={"value": "good"})
+        view = client.post(f"/sessions/{sid}/end").json()
+        assert view["status"] == "done" and view["ended_early"] is True

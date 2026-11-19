@@ -8,7 +8,7 @@ Each node receives the state and returns only the keys it changes. In order:
                     technical modes, from the closest seeded questions of the question bank).
 4. ask              searches your documents for passages that match the question (pgvector),
                     then Haiku says the question, or a follow-up, in natural words.
-5. answer           pauses (interrupt) until you answer.
+5. answer           pauses (interrupt) until you answer, or end the interview early.
 6. evaluate_answer  Haiku scores the answer with the rubric and decides on a follow-up.
 7. final_feedback   Sonnet writes the report from the transcript and the scores.
 
@@ -202,7 +202,11 @@ def ask(state: InterviewState) -> dict:
 
 
 def answer(state: InterviewState) -> dict:
-    """Pause until I answer (typed now, transcribed speech in Phase 2)."""
+    """Pause until I answer (typed or transcribed speech), or until I end the interview early.
+
+    Ending sends {"end": True} instead of text: the unanswered question is dropped from the
+    transcript and route_after_answer goes straight to final_feedback.
+    """
     reply = interrupt(
         {
             "type": "answer",
@@ -212,6 +216,11 @@ def answer(state: InterviewState) -> dict:
             "followup": bool(state.get("followup_focus")),
         }
     )
+    if isinstance(reply, dict) and reply.get("end"):
+        transcript = state["transcript"]
+        if transcript and transcript[-1]["role"] == "interviewer":
+            transcript = transcript[:-1]  # the question I did not answer
+        return {"ended_early": True, "transcript": transcript}
     turn = {
         "role": "candidate",
         "text": reply,
@@ -265,6 +274,14 @@ def final_feedback(state: InterviewState) -> dict:
         indent=2,
         ensure_ascii=False,
     )
+    note = ""
+    if state.get("ended_early"):
+        answered = len({e["q_index"] for e in state["evaluations"]})
+        note = (
+            f"\n\n<note>The candidate ended the interview early, after {answered} of "
+            f"{len(state['questions'])} planned main questions. Give feedback on what was answered only: "
+            "do not score or penalise the questions that were never asked.</note>"
+        )
     feedback = structured(
         model=s.model_reasoning,
         system=prompts.render(
@@ -277,7 +294,7 @@ def final_feedback(state: InterviewState) -> dict:
             rubric=prompts.rubric_text(state["mode"]),
         ),
         user=f"<transcript>\n{_transcript_text(state['transcript'])}\n</transcript>\n\n"
-        f"<turn_evaluations>\n{evaluations}\n</turn_evaluations>",
+        f"<turn_evaluations>\n{evaluations}\n</turn_evaluations>{note}",
         schema=FinalFeedback,
         max_tokens=16000,
         effort="high",
@@ -295,6 +312,10 @@ def route_start(state: InterviewState) -> str:
 
 def route_after_review(state: InterviewState) -> str:
     return "plan_questions" if state.get("brief_approved") else "prepare_brief"
+
+
+def route_after_answer(state: InterviewState) -> str:
+    return "final_feedback" if state.get("ended_early") else "evaluate_answer"
 
 
 def route_after_evaluate(state: InterviewState) -> str:

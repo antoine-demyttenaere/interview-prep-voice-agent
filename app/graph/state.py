@@ -52,4 +52,5 @@ class InterviewState(TypedDict, total=False):
     evaluations: list[dict]  # one per answer: AnswerEvaluation + question/answer
 
     # End
+    ended_early: bool  # I stopped before the last question (POST /sessions/{id}/end)
     final_feedback: dict | None

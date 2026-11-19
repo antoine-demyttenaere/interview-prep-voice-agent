@@ -8,15 +8,17 @@ stored in documents.raw_text, sent to Claude for the brief, and cut into chunks 
   layer, so it is rejected with a clear message (OCR is not supported).
 - DOCX: python-docx reads the paragraphs and the tables.
 - EML: Python's email library reads the headers (From, To, Date, Subject) and the body, plain
-  text if the email has it, otherwise the HTML with its tags removed. Attachments are ignored.
+  text if the email has it, otherwise the HTML turned into text. Attachments are ignored.
+- html_to_text(): turns HTML (an email body, or a web page from webpage.py) into readable
+  text, skipping menus, scripts and footers.
 """
 
 import email
-import html
 import io
 import re
 from dataclasses import dataclass
 from email import policy
+from html.parser import HTMLParser
 from pathlib import Path
 
 SUPPORTED = (".pdf", ".docx", ".eml", ".txt", ".md")
@@ -89,7 +91,71 @@ def _eml(data: bytes) -> str:
     if body_part is not None:
         body = body_part.get_content()
         if body_part.get_content_type() == "text/html":
-            body = re.sub(r"<(script|style).*?</\1>", "", body, flags=re.DOTALL | re.IGNORECASE)
-            body = re.sub(r"<br\s*/?>|</p>|</div>|</li>", "\n", body, flags=re.IGNORECASE)
-            body = html.unescape(re.sub(r"<[^>]+>", "", body))
+            body = html_to_text(body)[1]
     return "\n".join(headers) + "\n\n" + body
+
+
+# ---------- HTML (emails and web pages) ----------
+
+class _TextExtractor(HTMLParser):
+    """Collects the readable text of an HTML page, skipping menus, scripts, styles and forms.
+
+    Block elements (paragraphs, headings, list items...) become line breaks; list items get a
+    "- " in front. Text inside <main> or <article> is also kept apart: on a web page that is
+    usually the content itself, without the site's menus and footer.
+    """
+
+    SKIP = {"script", "style", "noscript", "svg", "nav", "footer", "aside", "form", "button", "iframe", "template", "head"}
+    BLOCK = {"p", "div", "br", "li", "tr", "section", "article", "main", "header", "ul", "ol", "table",
+             "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "dd", "dt"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.skip = 0
+        self.main = 0
+        self.in_title = False
+        self.title = ""
+        self.parts: list[str] = []
+        self.main_parts: list[str] = []
+
+    def _add(self, text: str) -> None:
+        self.parts.append(text)
+        if self.main:
+            self.main_parts.append(text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self.in_title = True
+        if tag in self.SKIP:
+            self.skip += 1
+        if tag in ("main", "article"):
+            self.main += 1
+        if tag in self.BLOCK and not self.skip:
+            self._add("\n- " if tag == "li" else "\n")
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self.in_title = False
+        if tag in self.SKIP and self.skip:
+            self.skip -= 1
+        if tag in ("main", "article") and self.main:
+            self.main -= 1
+        if tag in self.BLOCK and not self.skip:
+            self._add("\n")
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.title += data
+        elif not self.skip:
+            self._add(data)
+
+
+def html_to_text(page: str) -> tuple[str, str]:
+    """HTML -> (title, readable text). Prefers the <main>/<article> text when there is enough of it."""
+    parser = _TextExtractor()
+    parser.feed(page)
+    main_text = "".join(parser.main_parts)
+    raw = main_text if len(main_text.strip()) >= 500 else "".join(parser.parts)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
+    text = "\n".join(line for line in lines if line and line != "-")
+    return re.sub(r"\s+", " ", parser.title).strip(), text

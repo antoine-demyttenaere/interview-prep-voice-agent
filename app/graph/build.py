@@ -3,7 +3,7 @@
 - add_node registers a step; add_edge is a fixed arrow (ask -> answer);
   add_conditional_edges is a fork: a routing function from nodes.py returns the next node's name.
 - The loop ask -> answer -> evaluate_answer -> ask repeats until every question is done, then
-  goes to final_feedback and END.
+  goes to final_feedback and END. Ending early goes from answer straight to final_feedback.
 
 build_graph() returns the graph before it is compiled. app/main.py compiles it with the Postgres
 checkpointer, so progress is saved. The module-level `graph` has no checkpointer: it is what
@@ -31,7 +31,7 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("review_brief", nodes.route_after_review, ["plan_questions", "prepare_brief"])
     g.add_edge("plan_questions", "ask")
     g.add_edge("ask", "answer")
-    g.add_edge("answer", "evaluate_answer")
+    g.add_conditional_edges("answer", nodes.route_after_answer, ["evaluate_answer", "final_feedback"])
     g.add_conditional_edges("evaluate_answer", nodes.route_after_evaluate, ["ask", "final_feedback"])
     g.add_edge("final_feedback", END)
     return g

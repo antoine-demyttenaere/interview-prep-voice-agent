@@ -17,17 +17,25 @@ from pydantic import BaseModel, Field
 class Interviewer(BaseModel):
     name: str
     role: str = Field(description="Their job title or role in the process, if known")
-    notes: str = Field(description="What the documents say about them; empty if nothing")
+    notes: str = Field(description="One short phrase from the documents; empty if nothing")
 
 
 class InterviewBrief(BaseModel):
-    company_summary: str = Field(description="What the company does, its context, 3-5 sentences")
-    role_requirements: list[str] = Field(description="What the role needs, most important first")
-    interview_format: str = Field(description="Likely format, stages and length of this interview")
+    """Read in under two minutes before practising: every item is short. Limits are in the descriptions."""
+
+    company_summary: str = Field(
+        description="2 short sentences: what the company does, and the one fact that matters most for this interview"
+    )
+    role_requirements: list[str] = Field(
+        description="The 4 or 5 most important requirements, most important first, each under 10 words"
+    )
+    interview_format: str = Field(description="1 or 2 short sentences: who, how long, what kind of questions")
     interviewers: list[Interviewer]
-    cv_gaps: list[str] = Field(description="Gaps or weak spots between the CV and the role")
-    focus_areas: list[str] = Field(description="Areas the candidate should prepare most")
-    probable_questions: list[str] = Field(description="Questions this interviewer is likely to ask")
+    cv_gaps: list[str] = Field(description="The 2 or 3 biggest gaps between the CV and the role, one short sentence each")
+    focus_areas: list[str] = Field(
+        description="The 3 things to prepare most, one short sentence each, starting with a verb"
+    )
+    probable_questions: list[str] = Field(description="The 5 most likely questions, one sentence each")
 
 
 class PlannedQuestion(BaseModel):
@@ -58,15 +66,33 @@ class AnswerEvaluation(BaseModel):
 
 
 class QuestionFeedback(BaseModel):
-    question: str
+    number: int = Field(description="Number of the main question in the interview, starting at 1")
+    question: str = Field(description="The main question, shortened to one line")
     score: int = Field(description="1 to 5")
-    comment: str = Field(description="Specific, quoting or paraphrasing the answer")
+    comment: str = Field(description="1 or 2 short sentences, quoting or paraphrasing the answer")
+    better: str = Field(description="1 sentence: what a stronger answer would have said or shown")
+
+
+class FinalCriterionScore(BaseModel):
+    """One rubric criterion in the final report: the score, why, and how to raise it."""
+
+    criterion: str = Field(description="The rubric criterion id")
+    score: int = Field(description="1 to 5, per the rubric scale")
+    note: str = Field(description="One short sentence of evidence from the interview")
+    improve: list[str] = Field(
+        description="2 concrete ideas to raise this score next time, one short sentence each, "
+        "specific to this candidate's answers"
+    )
 
 
 class FinalFeedback(BaseModel):
+    """Read right after the interview: short items, the most useful first."""
+
     overall_score: int = Field(description="1 to 5")
-    summary: str = Field(description="Three or four sentences on the whole interview")
-    rubric_scores: list[CriterionScore]
+    summary: str = Field(description="2 or 3 short sentences on the whole interview")
+    rubric_scores: list[FinalCriterionScore]
     per_question: list[QuestionFeedback]
-    strengths: list[str]
-    fixes: list[str] = Field(description="Concrete changes for next time, most impactful first")
+    strengths: list[str] = Field(description="Up to 3, one short sentence each")
+    fixes: list[str] = Field(
+        description="The 3 most impactful changes for next time, one short sentence each, starting with a verb"
+    )

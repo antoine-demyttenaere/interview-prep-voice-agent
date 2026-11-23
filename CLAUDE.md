@@ -105,4 +105,4 @@ The guide to the whole codebase for beginners and intermediates. Update it in th
 
 ## Commits
 
-Commit as `antoine-demyttenaere` (set in this repo's local git config).
+Commit with the identity set in this repo's local git config (`antoine-demyttenaere`); don't override it with another name or email. Don't add a `Co-Authored-By` line to commit messages.

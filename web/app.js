@@ -32,6 +32,8 @@ How it works:
   (score -> comment, a stronger answer, and your own answer from the transcript).
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
+- "Your account" (bottom of the setup page): change the password (POST /auth/password), or
+  delete the account and all its data (DELETE /auth/me, with the password, after a confirm).
 */
 
 const $ = (id) => document.getElementById(id);
@@ -1064,6 +1066,29 @@ $("register-form").addEventListener("submit", (e) => {
     setAccount(user);
     showError("");
     await startApp();
+  });
+});
+
+$("password-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = $("password-form").elements;
+  run("Changing your password...", async () => {
+    await api("POST", "/auth/password", { current_password: f.current.value, new_password: f.new.value });
+    $("password-form").reset();
+    alert("Your password is changed. Your other logins have ended.");
+  });
+});
+
+$("delete-account-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!confirm("Delete your account and ALL your interviews, documents, CV and feedback? This can't be undone.")) return;
+  const f = $("delete-account-form").elements;
+  run("Deleting your account...", async () => {
+    await api("DELETE", "/auth/me", { password: f.password.value });
+    remember("sessionId", null);
+    clearDraft();
+    alert("Your account and all its data are deleted.");
+    location.reload();
   });
 });
 

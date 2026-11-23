@@ -238,15 +238,15 @@ Details in [Accounts and access](#accounts-and-access). Each step ends with its 
 - [x] **Users and login:** `users` and `login_sessions` tables, Argon2 hashing, the login cookie, `/auth/login`, `/auth/logout`, `/auth/me`, a script that creates my admin account (`scripts/create_user.py`). Also built now, so nothing breaks while routes need a login: the login screen on the web page (registration comes in step 3) and the CLI login. Check: I log in and out, and the API answers 401 without the cookie.
 - [x] **Ownership:** `user_id` on interviews, documents and chunks; existing rows given to me; `current_user` and ownership helpers on every route; the CV search filtered by user. Check: a second test account gets 404 on my interview, sessions and CV, and my CV never appears in its search results.
 - [x] **Invites and registration:** `invites` table, `create_invite.py`, `/auth/register`, a registration screen on the web page (same palette and fonts), reached from a "Create an account" link on the login screen. Check: a one-use code works once, then is refused with a clear message.
-- [ ] **Hardening:** login and registration limits, the `Origin` check, "Delete my account", the admin scripts (list, disable, reset password), a short privacy note at registration. Check: the 6th wrong password is blocked, and no row of a deleted user remains (checkpoints included).
-- [ ] Tests for each step (a logged-in client fixture for the existing tests; isolation between two users); HOW_IT_WORKS.md and README updated.
+- [x] **Hardening:** login and registration limits, the `Origin` check, "Delete my account", the admin scripts (`scripts/manage_users.py`: list, invites, disable, enable, reset password, delete), a short privacy note at registration. Also built: change password (`POST /auth/password`), needed after a reset. Check: the 6th wrong password is blocked, and no row of a deleted user remains (checkpoints included).
+- [x] Tests for each step (a logged-in client fixture for the existing tests; isolation between two users); HOW_IT_WORKS.md and README updated.
 
 **Check:** someone I invite registers with their code, runs an interview, and can't see anything of mine; I can't see theirs through the web page either.
 
 ### Phase 5: AWS with Terraform
 - [ ] Terraform modules: network, ECR, ECS Fargate, RDS Postgres (pgvector), S3 for uploads, ALB with HTTPS, Secrets Manager
 - [ ] Terraform state in S3; deploys through GitHub Actions
-- [ ] Accounts from Phase 4.6 behind HTTPS (`COOKIE_SECURE=true`); Cognito only if the built-in accounts stop being enough
+- [ ] Accounts from Phase 4.6 behind HTTPS (`COOKIE_SECURE=true`); uvicorn `--proxy-headers --forwarded-allow-ips` set to the load balancer, so the guessing limits see each caller's IP instead of the balancer's; Cognito only if the built-in accounts stop being enough
 - [ ] Cheaper fallback: one EC2 instance running the same Compose file behind Caddy
 
 **Check:** a voice interview works on the public HTTPS URL (the mic requires HTTPS outside localhost).
@@ -312,5 +312,5 @@ The proposal is Deepgram + ElevenLabs. No public per-vendor usage figures exist,
 - [x] Which languages should the feedback report be in? **The interview's language** (default chosen with the language decision; easy to change in `prompts/final_feedback.md`)
 - [x] Invite codes: one code per person or a shared code? **One code per person** (decided 2026-11-23)
 - [x] Should a code only work for the email I made it for? **Yes, each code is locked to one email** (decided 2026-11-23)
-- [ ] Other users' data in my LangSmith traces: hide their inputs and outputs, or tell them at registration?
+- [ ] Other users' data in my LangSmith traces: hide their inputs and outputs, or tell them at registration? (The registration form now tells them; hiding is still possible later.)
 - [ ] ElevenLabs plan: the free tier (about 5 interviews a month) or a paid plan? A subscription would use a large share of the $10 budget.

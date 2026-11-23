@@ -195,6 +195,13 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card > .hint { margin: 0 0 20px; }
 .auth-card .btn-large { margin-top: 6px; }
 .auth-card .auth-note { margin-top: 18px; text-align: center; }
+.auth-card .privacy-note { margin: 4px 0 16px; padding: 10px 12px; border-radius: 10px; background: var(--primary-soft); color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+.auth-card .privacy-note strong { color: var(--text); }
+/* "Your account" box at the bottom of the setup page */
+.account-form + .account-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.account-form h3 { margin: 12px 0 8px; }
+.account-form .inline { flex-wrap: wrap; }
+.account-form .inline input { flex: 1 1 200px; }
 .auth-card input[name="code"] { font-family: var(--font-heading); letter-spacing: 0.08em; text-transform: uppercase; }
 .muted { color: var(--muted); font-weight: 400; }
 .small { font-size: 0.9rem; }

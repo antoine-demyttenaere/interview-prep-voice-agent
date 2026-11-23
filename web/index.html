@@ -7,11 +7,13 @@ style.css the look. There are five panels, and app.js shows one at a time:
   0. login     - email and password; shown first when you aren't logged in, and whenever the
                  API answers 401 (your login ended). "Create an account" switches to the
                  registration form: email, password and the invite code you were given
-                 (scripts/create_invite.py). http://localhost:8000/#register opens it directly
+                 (scripts/create_invite.py), with a short note on where your data goes.
+                 http://localhost:8000/#register opens it directly
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
-                 "Your CV" shows the stored CV with a Delete button; a folded box continues a session
+                 "Your CV" shows the stored CV with a Delete button; a folded box continues a session;
+                 another, "Your account", changes your password or deletes your account
   2. brief     - the Interview Brief as six cards shown one at a time (round arrows, or the
                  keyboard arrows); "Approve" unlocks once you reach the last card; the "Something
                  to change?" box is always open; or go back to the documents
@@ -89,6 +91,13 @@ No build step and no framework: edit a file, reload the page.
           <span class="hint">Like K7QM-2XPA-9RTD. Capitals and dashes don't matter.</span>
           <input name="code" type="text" autocomplete="off" spellcheck="false" required>
         </label>
+        <p class="privacy-note">
+          <strong>Where your data goes.</strong> Your documents, answers and feedback are stored on this
+          server. To run the interview they are sent to Claude (Anthropic), Voyage AI (document search),
+          Deepgram (your voice to text) and ElevenLabs (the interviewer's voice), and recorded in the
+          operator's LangSmith traces for debugging. "Delete my account" removes everything from this
+          server; copies already sent to those services follow their own retention rules.
+        </p>
         <button type="submit" class="btn btn-primary btn-large">Create my account</button>
         <p class="hint auth-note">Already have an account? <a href="#login" id="to-login">Log in</a></p>
       </form>
@@ -222,6 +231,28 @@ No build step and no framework: edit a file, reload the page.
           <input id="resume-id" placeholder="Session id, e.g. 8ac19f5b-679c-4d95-8591-ed81ca89a955">
           <button id="resume" type="button" class="btn btn-ghost">Continue</button>
         </div>
+      </details>
+
+      <!-- Your account: change the password, or delete the account and all its data -->
+      <details class="resume panel" id="account-box">
+        <summary>Your account</summary>
+        <form id="password-form" class="account-form">
+          <h3>Change your password</h3>
+          <div class="inline">
+            <input name="current" type="password" autocomplete="current-password" placeholder="Current password" required>
+            <input name="new" type="password" autocomplete="new-password" minlength="10" placeholder="New password (10+ characters)" required>
+            <button type="submit" class="btn btn-ghost">Change</button>
+          </div>
+          <p class="hint">Your other logins (other browsers, the terminal) end; this one stays.</p>
+        </form>
+        <form id="delete-account-form" class="account-form">
+          <h3>Delete my account</h3>
+          <p class="hint">Deletes your account and everything in it: interviews, documents, CV, sessions, answers and feedback. It can't be undone.</p>
+          <div class="inline">
+            <input name="password" type="password" autocomplete="current-password" placeholder="Your password" required>
+            <button type="submit" class="btn btn-danger">Delete my account</button>
+          </div>
+        </form>
       </details>
     </section>
 

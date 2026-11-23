@@ -86,6 +86,9 @@ app/
     invites.py         Invite codes: make one for an email, check one at registration
     deps.py            current_user: who is calling, or 401
     ownership.py       owned_interview / owned_document / owned_session: yours, or 404
+    limits.py          Guessing limits: failed logins per email and per IP, registrations per IP (429)
+    origin.py          Refuses POST / PATCH / DELETE sent from another website's page (403)
+    account.py         Deletes an account and everything it owns, checkpoints included
     routes.py          /auth/login, /auth/logout, /auth/me
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
@@ -109,9 +112,9 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite, AuthAttempt
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0007
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0008
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
@@ -119,6 +122,7 @@ scripts/
   interview_cli.py     The terminal interview (the "client"); logs in first
   create_user.py       Creates an account (your own admin account, or a test one)
   create_invite.py     Creates a one-use invite code for one email (printed once)
+  manage_users.py      Admin: list accounts and invites, disable / enable, reset a password, delete
   smoke_claude.py      Quick check that the key, models and tracing work
   seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
   embed_documents.py   Embeds documents that have no chunks yet
@@ -156,7 +160,7 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0007). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0008). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
@@ -186,6 +190,14 @@ Why it is built this way:
 - **Same message for every bad code** (unknown, expired, used, or another email's), so trying codes teaches nothing. Only with the right code for that email does the answer say "this email already has an account: log in instead".
 - **Checked before spending:** a too-short password or a malformed email is refused before the code is touched, so the person can simply try again.
 - **Only the code's hash is stored** (like login tokens), so the database can't be used to register. A lost code can't be shown again: make a new one.
+
+### Step 0b-ter: what protects the accounts
+
+- **Guessing limits** ([limits.py](app/auth/limits.py)): each failed login is a row in `auth_attempts` (migration 0008). After 5 wrong passwords for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right password, and the check runs before the password is looked at, so the answer reveals nothing. A successful login clears the email's failures, so honest typos never add up. One IP address also gets at most 20 failures in the window (so nobody can try 5 passwords on every email), and at most 10 registration attempts per hour. The counts are in Postgres, not in memory, so they hold with several servers. The numbers are settings (`LOGIN_MAX_FAILURES`, `LOGIN_MAX_FAILURES_PER_IP`, `LOGIN_WINDOW_MINUTES`, `REGISTER_MAX_PER_HOUR`). The trade-off: someone who knows your email can lock it for 15 minutes.
+- **Origin check** ([origin.py](app/auth/origin.py)): a **middleware** (code that runs around every request, added in [main.py](app/main.py)) refuses a POST / PUT / PATCH / DELETE whose `Origin` header isn't this server, with 403. Browsers add that header to such requests and pages can't fake it. This stops **CSRF** (cross-site request forgery: a malicious page making your browser send a request here with your cookie). `SameSite=Lax` already blocks other sites, but every port of `localhost` counts as the same site, so another local app could otherwise get through. Requests with no `Origin` (the CLI, curl, tests) don't come from a page and pass.
+- **Changing the password** (`POST /auth/password`, "Your account" at the bottom of the setup page) needs the current one, and ends your other logins.
+- **Delete my account** (`DELETE /auth/me`, same box) needs the password, then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the registration form says where data goes.
+- **Admin** ([manage_users.py](scripts/manage_users.py)): `list`, `invites`, `disable EMAIL` (logged out at once, can't log in, data kept), `enable EMAIL`, `reset-password EMAIL` (prints a temporary password and logs them out everywhere; they change it in "Your account"), `delete EMAIL` (asks you to type the email again).
 
 ### Step 0c: you only see your own data
 
@@ -399,7 +411,7 @@ There are two kinds of tables in the same Postgres database:
 | Tables | Owned by | Holds |
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
-| `users`, `login_sessions`, `invites` | us (migrations 0005 and 0007; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
+| `users`, `login_sessions`, `invites`, `auth_attempts` | us (migrations 0005, 0007 and 0008; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled), logins (the hash of each cookie's token, its expiry), invite codes (hash, email, used or not) and recent failed logins / registrations (for the guessing limits; kept one day) |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
@@ -481,6 +493,7 @@ docker compose exec api pytest -q
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
 - registration ([tests/test_register.py](tests/test_register.py)): a valid code creates and logs in the account and is used up; sloppy typing is accepted; a code works once and only for its email; unknown, expired, used and other-email codes get the same answer and don't burn the code; weak passwords and existing accounts are refused without spending it; only the hash is stored;
+- hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong password is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't spray emails or keep registering; requests from another site are refused while the app's page, the CLI and GETs pass; changing the password needs the current one and ends other logins; deleting an account leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
 - that the technical types use the question bank and that system design allows 3 follow-ups;
@@ -511,6 +524,7 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | --- | --- |
 | start everything | `docker compose up -d` |
 | create an account (your own: add `--admin`) | `docker compose exec api python scripts/create_user.py --email you@example.com` |
+| list accounts / invites; disable, enable, reset a password, delete | `docker compose exec api python scripts/manage_users.py list` (or `invites`, `disable EMAIL`, `enable EMAIL`, `reset-password EMAIL`, `delete EMAIL`) |
 | invite someone (prints a one-use code for that email) | `docker compose exec api python scripts/create_invite.py --email them@example.com --note "who"` |
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
@@ -588,12 +602,16 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **Argon2 / password hash**: a one-way fingerprint of a password; the login check hashes what you type and compares. Argon2 is slow on purpose, to make guessing expensive.
 - **Base64**: a way to write binary data (like audio) as plain text, so it fits inside JSON.
 - **Effort**: how much Claude thinks before answering (low, medium or high).
+- **CSRF (cross-site request forgery)**: a page on another site making your browser send a request to this one, with your cookie attached. The Origin check stops it.
 - **Cookie**: a small value the server asks the browser to keep and send back with every request; here it holds the random login token.
 - **Chunk**: a piece of a document (a few paragraphs) that is embedded and searched on its own.
 - **Cosine distance / similarity**: how far apart two embeddings point; similarity 1 means the same meaning, 0 unrelated.
 - **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers.
 - **HNSW index**: a search index that links each vector to its neighbours, so the closest vectors are found without checking every row.
 - **401 / Unauthorized**: the HTTP answer meaning "log in first".
+- **429 / Too Many Requests**: the HTTP answer meaning "slow down, try again later".
+- **Middleware**: code that runs around every request, before and after the route.
+- **ON DELETE CASCADE**: a rule on a foreign key: when the row it points to is deleted, the database deletes this row too.
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
 - **Migration**: a numbered script that changes the database's tables in a controlled way.
 - **Node**: one step of the graph, written as a Python function.
@@ -620,7 +638,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
 | 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned (after 4.6, so it can count per user) |
-| 4.6. Accounts: email, password and an invite code; each user sees only their own data | steps 1-3 built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration. Next: hardening (login limits, Origin check, delete my account, admin scripts) |
+| 4.6. Accounts: email, password and an invite code; each user sees only their own data | built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration; guessing limits, Origin check, change password, delete my account, admin script, privacy note. The final check (inviting a real person) is yours to run |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

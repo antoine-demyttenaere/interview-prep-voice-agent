@@ -18,6 +18,8 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
   Not to be confused with Session above, which is a practice run.
 - Invite: a one-use code for one email address (scripts/create_invite.py); registering with it
   creates the account (POST /auth/register). Only a hash of the code is stored.
+- AuthAttempt: one failed login or one registration attempt, counted by app/auth/limits.py to
+  slow down password guessing.
 
 Who owns what: interviews, documents and chunks have a user_id; sessions belong to their
 interview. app/auth/ownership.py checks it on every request (someone else's row answers 404).
@@ -29,7 +31,7 @@ import uuid
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -168,3 +170,15 @@ class Invite(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     used_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class AuthAttempt(Base):
+    """A failed login (kind "login_failed") or a registration attempt (kind "register")."""
+
+    __tablename__ = "auth_attempts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    email: Mapped[str | None] = mapped_column(String(320))
+    ip: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

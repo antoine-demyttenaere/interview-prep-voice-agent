@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # it only over HTTPS. Keep cookie_secure false on http://localhost, set it true on AWS.
     login_days: int = 30
     cookie_secure: bool = False
+    # Guessing limits (app/auth/limits.py): failed logins per email and per IP address in a
+    # window, and registration attempts per IP address per hour.
+    login_max_failures: int = 5
+    login_max_failures_per_ip: int = 20
+    login_window_minutes: int = 15
+    register_max_per_hour: int = 10
 
     @property
     def psycopg_url(self) -> str:

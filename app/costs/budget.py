@@ -1,7 +1,8 @@
-"""Budgets and limits: adds up the usage table and decides whether a new interview may start.
+"""Budgets, limits and quotas: adds up the usage table and decides whether a new session may start.
 
-Used by app/api/sessions.py (before a session starts, before the questions are planned, before a
-brief revision) and by GET /usage (app/api/usage.py, the spend shown on the web page).
+Used by app/api/sessions.py (which kind a new session is, before it starts, before its questions
+are planned, before a brief revision) and by GET /usage (app/api/usage.py, the spend and what is
+left, shown on the web page).
 
 The rules, all set in .env (app/config.py):
 - Budgets, for all users together: the month (BUDGET_MONTHLY_USD, $10), the day
@@ -9,9 +10,15 @@ The rules, all set in .env (app/config.py):
   is used up, check_budget() refuses new sessions with 503, and the page says when it resets.
   An interview already running is never stopped: its answers, scores and feedback still go
   through, so nobody loses the interview they are in the middle of.
-- Per user: at most INTERVIEWS_PER_DAY (4) interviews per UTC day. An interview counts once
-  its questions are planned (sessions.questions_started_at), so writing and revising a brief
-  doesn't use one up.
+- The practice budget (Phase 4.7): practices together may spend BUDGET_PRACTICE_MONTHLY_USD ($3)
+  a month and BUDGET_PRACTICE_DAILY_USD ($0.75) a day, inside the global budget, so sign-ups
+  trying the app can't use up what the interviews need.
+- Quotas, per account (Phase 4.7): users.practice_quota (1) and users.interview_quota (2), in
+  all, never reset by themselves (manage_users.py grant adds more). A new session is a practice
+  while one is left, then an interview (session_kind). Admins have no quota.
+- Per user: at most INTERVIEWS_PER_DAY (4) sessions per UTC day.
+  A session counts (for the quotas and the daily limit) once its questions are planned
+  (sessions.questions_started_at), so writing and revising a brief doesn't use one up.
 - At BUDGET_WARN_RATIO (80%) of any budget, status() says so; the page shows it to the admin.
 
 Months and days are UTC calendar months and days, like the providers' own billing.
@@ -24,9 +31,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
 
 from app.config import get_settings
-from app.db.models import Interview, Session, Usage, User
+from app.db.models import AccessRequest, Interview, Session, Usage, User
 
 PROVIDERS = ("claude", "elevenlabs", "deepgram", "voyage")
+KINDS = ("practice", "interview")
 
 
 def _starts() -> tuple[datetime, datetime]:
@@ -41,6 +49,14 @@ def _spent(db: DB, since: datetime, **where) -> float:
     return float(db.scalar(stmt))
 
 
+def _spent_on_practices(db: DB, since: datetime) -> float:
+    return float(db.scalar(
+        select(func.coalesce(func.sum(Usage.cost_usd), 0))
+        .join(Session, Usage.session_id == Session.id)
+        .where(Usage.created_at >= since, Session.kind == "practice")
+    ))
+
+
 def status(db: DB) -> dict:
     """Spend against every budget, for the month and the day, all users together."""
     s = get_settings()
@@ -51,6 +67,9 @@ def status(db: DB) -> dict:
     ] + [
         {"name": p, "spent": _spent(db, month, provider=p), "budget": getattr(s, f"budget_{p}_usd")}
         for p in PROVIDERS
+    ] + [
+        {"name": "practices this month", "spent": _spent_on_practices(db, month), "budget": s.budget_practice_monthly_usd},
+        {"name": "practices today", "spent": _spent_on_practices(db, day), "budget": s.budget_practice_daily_usd},
     ]
     for r in rows:
         r["spent"] = round(r["spent"], 4)
@@ -62,14 +81,57 @@ def status(db: DB) -> dict:
     }
 
 
-def check_budget(db: DB) -> None:
-    """503 if any budget is used up: no new session, no new interview."""
-    exceeded = status(db)["exceeded"]
+def check_budget(db: DB, kind: str = "interview") -> None:
+    """503 if a budget this kind of session depends on is used up."""
+    exceeded = [n for n in status(db)["exceeded"] if kind == "practice" or not n.startswith("practices")]
     if not exceeded:
         return
-    when = "tomorrow (UTC)" if exceeded == ["today"] else "at the start of next month"
-    raise HTTPException(503, f"The practice budget is used up ({', '.join(exceeded)}), so no new interview "
-                             f"can start until {when}. An interview already running can still finish.")
+    daily = all(n in ("today", "practices today") for n in exceeded)
+    when = "tomorrow (UTC)" if daily else "at the start of next month"
+    what = "budget for practices" if all(n.startswith("practices") for n in exceeded) else "app's budget"
+    raise HTTPException(503, f"The {what} is used up ({', '.join(exceeded)}), so no new "
+                             f"{'practice' if kind == 'practice' else 'interview'} can start until {when}. "
+                             "An interview already running can still finish.")
+
+
+# ---------- quotas ----------
+
+def used(db: DB, user: User, kind: str) -> int:
+    """Sessions of this kind whose questions were planned (they count against the quota)."""
+    return db.scalar(
+        select(func.count()).select_from(Session).join(Interview, Session.interview_id == Interview.id)
+        .where(Interview.user_id == user.id, Session.kind == kind, Session.questions_started_at.is_not(None))
+    )
+
+
+def remaining(db: DB, user: User) -> dict:
+    """{"practice": n, "interview": n} left for this user, or None for an admin (no quota)."""
+    if user.is_admin:
+        return {"practice": None, "interview": None}
+    return {
+        "practice": max(0, user.practice_quota - used(db, user, "practice")),
+        "interview": max(0, user.interview_quota - used(db, user, "interview")),
+    }
+
+
+def session_kind(db: DB, user: User) -> str:
+    """What a new session will be: the practice while one is left, else an interview."""
+    return "practice" if remaining(db, user)["practice"] else "interview"
+
+
+NO_MORE = ("You have used your practice and your {n} interviews. Use \"Request more\" on the setup "
+           "page to ask for more.")
+
+
+def check_quota(db: DB, user: User, kind: str) -> None:
+    """429 if this user has no session of this kind left."""
+    left = remaining(db, user)[kind]
+    if left is None or left > 0:
+        return
+    if kind == "practice":
+        raise HTTPException(429, "Your practice is already used: start a new session from the setup page, "
+                                 "it will be an interview.")
+    raise HTTPException(429, NO_MORE.format(n=user.interview_quota))
 
 
 def interviews_today(db: DB, user: User) -> int:
@@ -80,20 +142,32 @@ def interviews_today(db: DB, user: User) -> int:
     )
 
 
-def check_can_start_interview(db: DB, user: User) -> None:
-    """Before the questions are planned: the budgets, then this user's interviews today (429)."""
-    check_budget(db)
+def check_can_start_interview(db: DB, user: User, kind: str = "interview") -> None:
+    """Before the questions are planned: budgets (503), this user's quota, then their sessions today (429)."""
+    check_budget(db, kind)
+    check_quota(db, user, kind)
     limit = get_settings().interviews_per_day
     if interviews_today(db, user) >= limit:
         raise HTTPException(429, f"You have done {limit} interviews today, the daily limit. "
                                  "You can start a new one tomorrow (UTC); your briefs are kept.")
 
 
+def pending_request(db: DB, user: User) -> AccessRequest | None:
+    return db.scalar(select(AccessRequest).where(AccessRequest.user_id == user.id, AccessRequest.handled_at.is_(None))
+                     .order_by(AccessRequest.created_at.desc()))
+
+
 def user_status(db: DB, user: User) -> dict:
     month, day = _starts()
+    left = remaining(db, user)
+    request = pending_request(db, user)
     return {
         "month_usd": round(_spent(db, month, user_id=user.id), 4),
         "today_usd": round(_spent(db, day, user_id=user.id), 4),
         "interviews_today": interviews_today(db, user),
         "interviews_per_day": get_settings().interviews_per_day,
+        "practice_left": left["practice"],
+        "interviews_left": left["interview"],
+        "next_session": session_kind(db, user),
+        "request_pending_since": request.created_at.isoformat() if request else None,
     }

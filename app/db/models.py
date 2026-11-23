@@ -24,6 +24,8 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 - Usage: one paid API call (Claude, Deepgram, ElevenLabs, Voyage) with what it used and cost,
   written by app/costs/usage.py and added up by app/costs/budget.py.
 - QuestionAudio: the spoken audio of one question in one session, so a replay costs nothing.
+- AccessRequest: someone asking for more practices / interviews ("Request more"), and what was
+  granted (scripts/manage_users.py grant).
 
 Who owns what: interviews, documents and chunks have a user_id; sessions belong to their
 interview. app/auth/ownership.py checks it on every request (someone else's row answers 404).
@@ -135,6 +137,8 @@ class Session(Base):
     # counted by the "interviews per day" limit), and how many brief revisions were asked for.
     questions_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     brief_revisions: Mapped[int] = mapped_column(Integer, default=0)
+    # "practice" (short: 3 questions, Haiku feedback; a new account's first session) or "interview"
+    kind: Mapped[str] = mapped_column(String(20), default="interview")
 
 
 class User(Base):
@@ -145,6 +149,10 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # first code login
+    # How many sessions of each kind this person may start in all (Phase 4.7; admins have no
+    # quota). They never reset by themselves: manage_users.py grant adds more.
+    practice_quota: Mapped[int] = mapped_column(Integer, default=1)
+    interview_quota: Mapped[int] = mapped_column(Integer, default=2)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # set = can't log in
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -229,3 +237,17 @@ class QuestionAudio(Base):
     mime_type: Mapped[str] = mapped_column(String(50))
     audio: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AccessRequest(Base):
+    """A request for more practices or interviews; handled_at is set when the admin grants it."""
+
+    __tablename__ = "access_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    practices_added: Mapped[int] = mapped_column(Integer, default=0)
+    interviews_added: Mapped[int] = mapped_column(Integer, default=0)

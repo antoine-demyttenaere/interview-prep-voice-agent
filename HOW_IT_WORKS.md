@@ -96,7 +96,7 @@ app/
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
     sessions.py        Start a session, resume it with your reply, retry a failed step
-    usage.py           GET /usage: your spend and limits; the budgets for the admin
+    usage.py           GET /usage: your spend and what's left; POST /access-requests ("Request more"); grant_more
   graph/               The interviewer (LangGraph)
     state.py           What the graph remembers (the "state")
     nodes.py           The 7 steps and the 3 routing functions
@@ -116,9 +116,9 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, EmailCode, AuthAttempt, Usage, QuestionAudio
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, EmailCode, AuthAttempt, AccessRequest, Usage, QuestionAudio
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0010
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0011
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
@@ -126,7 +126,7 @@ pricing.yaml           What each paid API charges (Claude per token kind, Deepgr
 scripts/
   interview_cli.py     The terminal interview (the "client"); logs in first
   create_user.py       Creates an account: your own admin account (no password; you log in with a code)
-  manage_users.py      Admin: list accounts, disable / enable, delete
+  manage_users.py      Admin: list accounts, disable / enable, delete; pending requests and grant more
   smoke_claude.py      Quick check that the key, models and tracing work
   seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
   embed_documents.py   Embeds documents that have no chunks yet
@@ -164,7 +164,7 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0010). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0011). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
@@ -194,6 +194,18 @@ The terminal CLI logs in the same way: it asks for your email (or reads `INTERVI
 - **Origin check** ([origin.py](app/auth/origin.py)): a **middleware** (code that runs around every request, added in [main.py](app/main.py)) refuses a POST / PUT / PATCH / DELETE whose `Origin` header isn't this server, with 403. Browsers add that header to such requests and pages can't fake it. This stops **CSRF** (cross-site request forgery: a malicious page making your browser send a request here with your cookie). `SameSite=Lax` already blocks other sites, but every port of `localhost` counts as the same site, so another local app could otherwise get through. Requests with no `Origin` (the CLI, curl, tests) don't come from a page and pass.
 - **Delete my account** ("Your account" at the bottom of the setup page): **Email me a code** (`POST /auth/delete-code`) sends a code made only for this, and typing it (`DELETE /auth/me`) confirms. That proves the inbox is still yours, so someone using a browser you left logged in can't delete your account. Then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the login screen says where data goes.
 - **Admin** ([manage_users.py](scripts/manage_users.py)): `list` (with when each email was verified), `disable EMAIL` (logged out at once, no login code is sent any more, data kept), `enable EMAIL`, `delete EMAIL` (asks you to type the email again). There are no passwords to reset.
+
+### Step 0b-quater: your practice, your interviews, and "Request more"
+
+Each account can start a set number of sessions in all (Phase 4.7, [budget.py](app/costs/budget.py)): **1 practice** and **2 interviews** (`users.practice_quota`, `users.interview_quota`). They never reset by themselves. Admins have no quota.
+
+1. **The practice comes first.** While an account has its practice left, a new session is one (`sessions.kind = "practice"`, shown as "Practice" in the header). You set it up exactly like an interview, with your own documents, and review the brief Sonnet writes. It is just shorter: `PRACTICE_QUESTIONS` (3) questions whatever the form says, and Haiku writes the final feedback (the graph reads `practice` from its state; see `final_feedback` in [nodes.py](app/graph/nodes.py)). About $0.25-0.30 instead of $0.50.
+2. **Then the interviews**, the full session. The documents and the approved brief stay, so the next session on the same interview starts straight at the questions.
+3. **A session counts once its questions are planned** (`questions_started_at`), as for the daily limit: writing and revising briefs is free. With nothing left, starting a session is refused with 429 before any Claude call. One edge case: if you prepare two practices in parallel, the second can't start once the first has (it says so; start a new session, which will be an interview).
+4. **Request more.** Once nothing is left, the setup page shows a **Request more** box (with an optional message). `POST /access-requests` ([usage.py](app/api/usage.py)) saves an `access_requests` row (one pending at a time) and emails the admins. You see pending requests with `manage_users.py requests` and grant with `manage_users.py grant EMAIL --interviews 2` (or `--practices 1`), which adds to the quota, closes the request and emails the person.
+5. **The practice budget:** practices together may spend `BUDGET_PRACTICE_MONTHLY_USD` ($3) a month and `BUDGET_PRACTICE_DAILY_USD` ($0.75) a day, inside the global budget (usage rows are linked to their session, whose `kind` says it was a practice). When it's used up, new practices get 503, while interviews carry on.
+
+`GET /usage` returns what's left (`practice_left`, `interviews_left`, `next_session`, `request_pending_since`), and the header shows it: "This month: $0.30 · 2 interviews left".
 
 ### Step 0c: you only see your own data
 
@@ -408,6 +420,7 @@ There are two kinds of tables in the same Postgres database:
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
 | `users`, `login_sessions`, `email_codes`, `auth_attempts` | us (migrations 0005, 0008 and 0010; 0006 adds `user_id` to interviews, documents and chunks; 0010 drops passwords and the old invites) | accounts (email, admin, disabled, when the email was verified), logins (the hash of each cookie's token, its expiry), login codes (HMAC, purpose, expiry, tries, used or not) and recent codes sent / wrong codes (for the limits; kept one day) |
+| `access_requests` | us (migration 0011, which also adds `practice_quota` / `interview_quota` to `users` and `kind` to `sessions`) | each "Request more": who, their message, when, and what was granted |
 | `usage`, `question_audio` | us (migration 0009, which also adds `questions_started_at` and `brief_revisions` to `sessions`) | one row per paid API call (provider, model, what it used, its cost, user and session; kept when the account is deleted, without the link) and the spoken audio of each question, so replays are free |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
@@ -518,6 +531,7 @@ docker compose exec api pytest -q
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
 - login by code ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login; a new email gets a code and typing it creates, verifies and logs in the account, an existing account logs in the same way; "send me a code" answers the same for every email (a disabled one gets no email); a code works once and only the latest counts, an expired code is refused, 5 wrong tries end a code, and a code only works for its email; the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused; only an HMAC of the code and a hash of the token are stored. Emails go to a fake mailbox (conftest `mailbox`), where the tests read the codes;
+- the practice and quotas ([tests/test_quotas.py](tests/test_quotas.py)): a new account's first session is a 3-question practice with Haiku feedback, and the next one reuses its documents and brief as a full interview with Sonnet feedback; after the practice and 2 interviews a new session is refused before any Claude call; "Request more" only once nothing is left, one at a time, emailing the admins; a grant adds interviews, closes the request and emails the person; a practice used elsewhere can't start twice; the practice budget stops practices, not interviews; admins have no quota. The shared test account has no practice and an endless interview quota, so the other tests run plain interviews;
 - cost control ([tests/test_costs.py](tests/test_costs.py)): prices (four token kinds, Haiku's long-prompt prices, unknown models never free, speech and embeddings); every Claude response recorded, and calls inside graph nodes recorded for the right user and session; usage kept after an account is deleted; over the monthly budget a running interview still ends with feedback while a new one gets 503 (and the daily budget says "tomorrow"); interviews per day counted when questions are planned, not for briefs; brief revisions, questions, documents, characters, web pages and CV capped; big recordings refused before speech-to-text; replays not synthesized twice and long questions text-only; `GET /usage` showing the budgets only to an admin. The conftest fixture `generous_limits` empties `usage` and sets the budgets and the daily limit very high for every other test;
 - hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong code is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't try codes on many emails, and nobody can flood an inbox (per email and per IP); requests from another site are refused while the app's page, the CLI and GETs pass; deleting an account needs its own emailed code (a login code doesn't work), then leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
@@ -550,7 +564,8 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | start everything | `docker compose up -d` |
 | create your admin account (once; no password) | `docker compose exec api python scripts/create_user.py --email you@example.com --admin` |
 | read your login code (locally, emails are printed in the logs) | `docker compose logs api` (look for `----- EMAIL`) |
-| list accounts; disable, enable, delete | `docker compose exec api python scripts/manage_users.py list` (or `disable EMAIL`, `enable EMAIL`, `delete EMAIL`) |
+| list accounts (with what they have left); disable, enable, delete | `docker compose exec api python scripts/manage_users.py list` (or `disable EMAIL`, `enable EMAIL`, `delete EMAIL`) |
+| see who asked for more, and grant it (emails them) | `docker compose exec api python scripts/manage_users.py requests`, then `... grant EMAIL --interviews 2` |
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
@@ -671,7 +686,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4. Evals in LangSmith | planned |
 | 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | built and tested: usage recorded per call, user and session; budgets with an 80% warning; per-user, per-session and per-input limits; free replays; spend in the header. The caps in each provider's console and the comparison with their dashboards are yours to do |
 | 4.6. Accounts: email, password and an invite code; each user sees only their own data | built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration; guessing limits, Origin check, change password, delete my account, admin script, privacy note. The final check (inviting a real person) is yours to run |
-| 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | step 1 built and tested: log in and sign up with an emailed code, no passwords or invites, delete-my-account by code, CLI code login. Next: the practice, quotas and "Request more" |
+| 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

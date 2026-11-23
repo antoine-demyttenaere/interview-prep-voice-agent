@@ -18,8 +18,9 @@ pytest loads conftest.py automatically.
   each email in a list; mailbox.code_for(email) reads the latest 6-digit code sent there.
 - Generous cost limits: the usage table is emptied before each test and the budgets and the
   "interviews per day" limit are set very high (fixture `generous_limits`), since the test
-  account starts many interviews. A test that checks a limit lowers it with monkeypatch
-  (tests/test_costs.py).
+  account starts many interviews (it also has no practice and an endless interview quota). A
+  test that checks a limit lowers it with monkeypatch (tests/test_costs.py), and the quota tests
+  use fresh accounts (tests/test_quotas.py).
 """
 
 import hashlib
@@ -73,13 +74,16 @@ TEST_EMAIL = "tests@example.com"
 
 @pytest.fixture(scope="session")
 def test_user(test_database) -> User:
-    """The account the tests run as (created once, reused by every run)."""
+    """The account the tests run as (created once, reused by every run). It has no practice and an
+    endless interview quota, so every session is a plain interview, as the older tests expect;
+    the quota tests use fresh accounts (tests/test_quotas.py)."""
     with DB(get_engine(), expire_on_commit=False) as db:
         user = db.scalar(select(User).where(User.email == TEST_EMAIL))
         if not user:
             user = User(email=TEST_EMAIL)
             db.add(user)
-            db.commit()
+        user.practice_quota, user.interview_quota = 0, 1_000_000
+        db.commit()
         return user
 
 
@@ -101,10 +105,12 @@ class FakeMailer:
 
 @pytest.fixture(autouse=True)
 def mailbox(monkeypatch):
+    from app.api import usage as usage_api
     from app.auth import routes as auth_routes
 
     box = FakeMailer()
     monkeypatch.setattr(auth_routes, "get_mailer", lambda: box)
+    monkeypatch.setattr(usage_api, "get_mailer", lambda: box)
     return box
 
 
@@ -122,7 +128,7 @@ def generous_limits(test_database, monkeypatch):
         db.commit()
     s = get_settings()
     monkeypatch.setattr(s, "interviews_per_day", 100_000)
-    for name in ("monthly", "daily", "claude", "elevenlabs", "deepgram", "voyage"):
+    for name in ("monthly", "daily", "claude", "elevenlabs", "deepgram", "voyage", "practice_monthly", "practice_daily"):
         monkeypatch.setattr(s, f"budget_{name}_usd", 1_000_000.0)
 
 
@@ -157,9 +163,11 @@ class FakeClaude:
         self.calls: list[str] = []
         self.systems: list[str] = []  # system prompts sent, to check the language
         self.asks: list[str] = []  # ask prompts sent, to check the retrieved context
+        self.models: dict[str, str] = {}  # schema name -> model asked for (e.g. Haiku for a practice's feedback)
 
-    def structured(self, *, schema, user, system, **_):
+    def structured(self, *, schema, user, system, model=None, **_):
         self.calls.append(schema.__name__)
+        self.models[schema.__name__] = model
         self.systems.append(system)
         if schema is InterviewBrief:
             return BRIEF

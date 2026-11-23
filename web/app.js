@@ -33,7 +33,10 @@ How it works:
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
 - Spend (header): GET /usage after logging in and after each interview: "This month: $0.42"
-  for you; an admin sees the month's budget instead, in a warning color from 80%.
+  and what's left for you; an admin sees the month's budget instead, in a warning color from 80%.
+- Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
+  questions); the header says "Practice" during it. Once the practice and interviews are used, the
+  setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
 - "Your account" (bottom of the setup page): delete the account and all its data: "Email me a
   code" (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
 */
@@ -139,6 +142,7 @@ async function run(text, action) {
     hidePending(); // no "..." left behind when a step fails
     if (err.loggedOut) return; // the login screen is already showing
     showError(err.message);
+    if (err.status === 429) loadUsage(); // a quota may be used up: show "Request more"
     // A failed Claude call leaves the session "stopped": reload the view so Retry appears.
     if (err.status === 502 && state.sessionId) {
       try { render(await api("GET", `/sessions/${state.sessionId}`)); } catch (_) {}
@@ -181,7 +185,7 @@ function render(view) {
   state.view = view;
   state.sessionId = view.session_id;
   remember("sessionId", view.session_id);
-  $("session-label").textContent = `Session ${view.session_id.slice(0, 8)}`;
+  $("session-label").textContent = `${view.kind === "practice" ? "Practice" : "Session"} ${view.session_id.slice(0, 8)}`;
   $("leave").hidden = false;
   document.documentElement.lang = view.language || "en";
 
@@ -1059,12 +1063,40 @@ async function loadUsage() {
       box.classList.toggle("spend-warn", u.budget.warning);
       box.title = u.budget.budgets.map((b) => `${b.name}: ${dollars(b.spent)} of ${dollars(b.budget)}`).join("\n");
     } else {
-      box.textContent = `This month: ${dollars(u.you.month_usd)}`;
-      box.title = `Interviews today: ${u.you.interviews_today} of ${u.you.interviews_per_day}`;
+      const you = u.you;
+      const left = you.practice_left ? "practice next"
+        : `${you.interviews_left} interview${you.interviews_left === 1 ? "" : "s"} left`;
+      box.textContent = `This month: ${dollars(you.month_usd)} · ${left}`;
+      box.title = `Interviews today: ${you.interviews_today} of ${you.interviews_per_day}`;
     }
     box.hidden = false;
+    showQuota(u.you, u.limits);
   } catch (_) {}
 }
+
+// Above the setup form: "your first session is a practice", or "Request more" once nothing is left.
+function showQuota(you, limits) {
+  const nothingLeft = you.practice_left === 0 && you.interviews_left === 0;
+  $("practice-note").hidden = !you.practice_left;
+  $("interviews-after").textContent = you.interviews_left;
+  if (limits) $("practice-questions").textContent = limits.practice_questions;
+  $("request-more").hidden = !nothingLeft || Boolean(you.request_pending_since);
+  $("request-sent").hidden = !nothingLeft || !you.request_pending_since;
+  if (you.request_pending_since) {
+    const day = new Date(you.request_pending_since).toLocaleDateString();
+    $("request-sent").textContent = `You asked for more interviews on ${day}. You'll get an email once they're added.`;
+  }
+}
+
+$("request-more").addEventListener("submit", (e) => {
+  e.preventDefault();
+  run("Sending your request...", async () => {
+    const reply = await api("POST", "/access-requests", { message: $("request-more").elements.message.value });
+    $("request-more").reset();
+    alert(reply.detail);
+    await loadUsage();
+  });
+});
 
 // Continue the last session of this browser, if there is one; otherwise show the setup form,
 // with the draft you were typing.

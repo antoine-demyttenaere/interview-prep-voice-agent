@@ -36,6 +36,7 @@ class InterviewState(TypedDict, total=False):
     role: str
     documents: list[DocumentInput]
     num_questions: int
+    practice: bool  # a short practice session (Phase 4.7): Haiku writes the final feedback
     duration_min: int | None  # interview length chosen at setup (shown as a countdown on the page)
 
     # Brief, and my review of it

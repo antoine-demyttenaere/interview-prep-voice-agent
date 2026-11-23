@@ -19,6 +19,12 @@ are done (app/costs/budget.py); an interview already running always finishes. Br
 per session, questions per session, recording size and spoken question length are capped, and
 each question's audio is saved (question_audio table), so a replay doesn't pay for speech again.
 
+Practice or interview (Phase 4.7): a new session is a practice while the account has one left
+(budget.session_kind), else an interview; sessions.kind remembers which. A practice has
+PRACTICE_QUESTIONS (3) questions and Haiku writes its feedback (the graph reads "practice" from
+its state). A session counts against its quota once its questions are planned; with nothing
+left, a new session is refused (429) before any Claude call.
+
 Each call runs the graph until it pauses again (interrupt()) and returns a "view": status
 (waiting / done / stopped), pending (what it is waiting for), and final_feedback at the end.
 The checkpointer saves the graph's state under thread_id = session id. After each run, _run()
@@ -50,7 +56,7 @@ from app.auth.deps import current_user
 from app.auth.ownership import owned_interview, owned_session
 from app.config import get_settings
 from app.costs import usage
-from app.costs.budget import check_budget, check_can_start_interview
+from app.costs.budget import check_budget, check_can_start_interview, check_quota, session_kind
 from app.db.models import Document, Interview, QuestionAudio, Session, User
 from app.db.session import get_db
 from app.graph import prompts
@@ -115,6 +121,7 @@ def _view(graph, session: Session) -> dict:
     return {
         "session_id": str(session.id),
         "interview_id": str(session.interview_id),
+        "kind": session.kind,  # practice | interview
         "status": status,
         "pending": pending,
         "q_index": values.get("q_index"),
@@ -161,7 +168,9 @@ def _run(graph, session: Session, graph_input, db: DB) -> dict:
 def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db: DB = Depends(get_db),
                   user: User = Depends(current_user)) -> dict:
     interview = owned_interview(db, user, interview_id)
-    check_budget(db)  # even writing a brief costs a Sonnet call
+    kind = session_kind(db, user)
+    check_budget(db, kind)  # even writing a brief costs a Sonnet call
+    check_quota(db, user, kind)  # nothing left: refused before any Claude call
     max_q = get_settings().max_questions
     if body.num_questions and body.num_questions > max_q:
         raise HTTPException(422, f"At most {max_q} questions per interview.")
@@ -179,10 +188,10 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
     # Going back to the brief from an interview: start at the review, with the same brief.
     review_again = body.review_brief and interview.brief
     if approved and not review_again:
-        check_can_start_interview(db, user)  # this goes straight to planning the questions
+        check_can_start_interview(db, user, kind)  # this goes straight to planning the questions
 
     session_id = uuid.uuid4()
-    session = Session(id=session_id, interview_id=interview_id, thread_id=str(session_id))
+    session = Session(id=session_id, interview_id=interview_id, thread_id=str(session_id), kind=kind)
     db.add(session)
     db.commit()
 
@@ -196,7 +205,8 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
         "documents": [
             {"doc_type": d.doc_type, "source": d.source, "text": d.raw_text or ""} for d in docs
         ],
-        "num_questions": body.num_questions,
+        "num_questions": get_settings().practice_questions if kind == "practice" else body.num_questions,
+        "practice": kind == "practice",
         "duration_min": body.duration_min,
         "brief": interview.brief if (approved or review_again) else None,
         "brief_approved": bool(approved) and not review_again,
@@ -229,8 +239,8 @@ def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: 
                                          "Edit the brief yourself, or approve it.")
             session.brief_revisions += 1
             db.commit()
-        else:  # approve or edit: the questions are planned next, so this starts an interview
-            check_can_start_interview(db, user)
+        else:  # approve or edit: the questions are planned next, so this starts the session
+            check_can_start_interview(db, user, session.kind)
         value = body.value.model_dump(mode="json")
     else:  # "answer"
         if not isinstance(body.value, str) or not body.value.strip():

@@ -18,7 +18,8 @@ start, and this time interrupt() returns your reply instead of pausing. So code 
 interrupt() must be safe to run twice.
 
 Sonnet (settings.model_reasoning) does the slow, careful work; Haiku (settings.model_turn) runs
-each turn quickly, because in Phase 2 you will be waiting for it to speak.
+each turn quickly, because in Phase 2 you will be waiting for it to speak. In a practice session
+(state["practice"], Phase 4.7) Haiku also writes the final feedback, to keep the practice cheap.
 """
 
 import json
@@ -284,8 +285,11 @@ def final_feedback(state: InterviewState) -> dict:
             f"{len(state['questions'])} planned main questions. Give feedback on what was answered only: "
             "do not score or penalise the questions that were never asked.</note>"
         )
+    # A practice (Phase 4.7) gets its feedback from Haiku: shorter session, lower cost. Sonnet's
+    # refusal fallback doesn't exist for Haiku, so it is only asked for with Sonnet.
+    practice = bool(state.get("practice"))
     feedback = structured(
-        model=s.model_reasoning,
+        model=s.model_turn if practice else s.model_reasoning,
         system=prompts.render(
             "final_feedback",
             company=state["company"],
@@ -299,8 +303,8 @@ def final_feedback(state: InterviewState) -> dict:
         f"<turn_evaluations>\n{evaluations}\n</turn_evaluations>{note}",
         schema=FinalFeedback,
         max_tokens=16000,
-        effort="high",
-        fallback=True,
+        effort="medium" if practice else "high",
+        fallback=not practice,
     )
     return {"final_feedback": feedback.model_dump()}
 

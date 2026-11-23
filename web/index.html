@@ -11,7 +11,9 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
                  "Your CV" shows the stored CV with a Delete button; a folded box continues a session;
-                 another, "Your account", deletes your account (confirmed by an emailed code)
+                 another, "Your account", deletes your account (confirmed by an emailed code).
+                 Above the form, a note says when the next session is your practice (3 questions),
+                 or, once nothing is left, offers "Request more" (POST /access-requests)
   2. brief     - the Interview Brief as six cards shown one at a time (round arrows, or the
                  keyboard arrows); "Approve" unlocks once you reach the last card; the "Something
                  to change?" box is always open; or go back to the documents
@@ -93,6 +95,21 @@ No build step and no framework: edit a file, reload the page.
 
     <!-- 1. Setup (hidden until app.js knows you're logged in) -->
     <section id="panel-setup" hidden>
+      <!-- What's left (GET /usage): your practice is next, or nothing is left: "Request more" -->
+      <div id="practice-note" class="quota-note" hidden>
+        <strong>Your first session is a short practice:</strong> <span id="practice-questions">3</span> questions with your own documents,
+        then feedback. After it, you have <span id="interviews-after"></span> full interviews.
+      </div>
+      <form id="request-more" class="quota-note quota-empty" hidden>
+        <p><strong>You have used your practice and your interviews.</strong> Your documents and briefs are
+          kept. Ask for more, and you'll get an email once they're added.</p>
+        <div class="inline">
+          <input name="message" maxlength="1000" placeholder="A word about why (optional): e.g. my next interview is on Friday">
+          <button type="submit" class="btn btn-primary">Request more</button>
+        </div>
+      </form>
+      <p id="request-sent" class="quota-note" hidden></p>
+
       <form id="setup-form" class="panel wizard">
         <!-- Shown when you came back here from a brief: you can return to it unchanged -->
         <div id="editing-banner" class="editing" hidden>

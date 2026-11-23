@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     budget_deepgram_usd: float = 1.0
     budget_voyage_usd: float = 0.5
     budget_warn_ratio: float = 0.8
+    # The practice (Phase 4.7): its own budget inside the global one, so sign-ups trying the app
+    # can't use up the interviews' budget; and its shape (fewer questions, Haiku feedback).
+    budget_practice_monthly_usd: float = 3.0
+    budget_practice_daily_usd: float = 0.75
+    practice_questions: int = 3
     # Limits per user, per session and per input (plan.md, "Cost control").
     interviews_per_day: int = 4  # per user: interviews whose questions were planned today
     brief_revisions_max: int = 3  # "ask for changes" per session

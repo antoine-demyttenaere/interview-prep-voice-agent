@@ -6,7 +6,8 @@ How it works:
   not, the login screen shows (POST /auth/login sets the cookie; the browser then sends it with
   every request by itself, and page scripts can't read it). Any 401 later (login expired,
   account disabled) brings the login screen back, and logging in again continues where you
-  were. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
+  were. "Create an account" switches to the registration form (POST /auth/register: email,
+  password and invite code), which logs you in too; #register in the address opens it. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
   reloads the page.
 - Every screen comes from a "view" the API returns (status + what the session is waiting for).
   render(view) shows the right panel: brief review, interview, or feedback.
@@ -104,7 +105,7 @@ async function api(method, path, body, isForm = false) {
   const res = await fetch(path, options);
   // 401 = not logged in (any more): show the login screen. A wrong password on the login form
   // is also a 401, but that one is shown as a normal error.
-  if (res.status === 401 && path !== "/auth/login") {
+  if (res.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
     showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
     const err = new Error("Please log in.");
     err.status = 401;
@@ -1009,15 +1010,21 @@ function setAccount(user) {
   $("logout").hidden = !user;
 }
 
-function showLogin(message = "") {
+// The login panel holds two forms: "login" or "register" (#register in the address opens it).
+function showLogin(message = "", form = location.hash === "#register" ? "register" : "login") {
   if (state.audio) state.audio.pause();
   setAccount(null);
   $("session-label").textContent = "";
   $("leave").hidden = true;
   showPanel("login");
+  $("login-form").hidden = form !== "login";
+  $("register-form").hidden = form !== "register";
   showError(message);
-  $("login-email").focus();
+  $(`${form}-form`).elements.email.focus();
 }
+
+$("to-register").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", "#register"); showLogin("", "register"); });
+$("to-login").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showLogin("", "login"); });
 
 // Continue the last session of this browser, if there is one; otherwise show the setup form,
 // with the draft you were typing.
@@ -1040,6 +1047,20 @@ $("login-form").addEventListener("submit", (e) => {
   run("Logging in...", async () => {
     const user = await api("POST", "/auth/login", { email: f.email.value, password: f.password.value });
     f.password.value = "";
+    setAccount(user);
+    showError("");
+    await startApp();
+  });
+});
+
+$("register-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = $("register-form").elements;
+  run("Creating your account...", async () => {
+    const user = await api("POST", "/auth/register",
+      { email: f.email.value, password: f.password.value, code: f.code.value });
+    $("register-form").reset();
+    history.replaceState(null, "", location.pathname); // drop #register from the address
     setAccount(user);
     showError("");
     await startApp();

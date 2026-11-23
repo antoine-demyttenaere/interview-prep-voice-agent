@@ -83,6 +83,7 @@ app/
   auth/                Accounts (Phase 4.6)
     passwords.py       Hashes and checks passwords (Argon2)
     tokens.py          The random login token in the cookie, and its hash
+    invites.py         Invite codes: make one for an email, check one at registration
     deps.py            current_user: who is calling, or 401
     ownership.py       owned_interview / owned_document / owned_session: yours, or 404
     routes.py          /auth/login, /auth/logout, /auth/me
@@ -108,15 +109,16 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0006
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0007
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
 scripts/
   interview_cli.py     The terminal interview (the "client"); logs in first
   create_user.py       Creates an account (your own admin account, or a test one)
+  create_invite.py     Creates a one-use invite code for one email (printed once)
   smoke_claude.py      Quick check that the key, models and tracing work
   seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
   embed_documents.py   Embeds documents that have no chunks yet
@@ -154,16 +156,16 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0006). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0007). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
 
 ### Step 0b: you log in
 
-Every interview and session route needs a login; only `/health`, `/auth/login` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them.
+Every interview and session route needs a login; only `/health`, `/auth/login`, `/auth/register` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them.
 
-1. **Create your account once:** `docker compose exec api python scripts/create_user.py --email you@example.com --admin`. It asks for a password (at least 10 characters) and stores only its **Argon2 hash** ([passwords.py](app/auth/passwords.py)) in the `users` table. (Registration with an invite code comes in Phase 4.6 step 3.)
+1. **Create your account once:** `docker compose exec api python scripts/create_user.py --email you@example.com --admin`. It asks for a password (at least 10 characters) and stores only its **Argon2 hash** ([passwords.py](app/auth/passwords.py)) in the `users` table. Admin accounts are only made this way.
 2. **Log in:** the page calls `GET /auth/me` on load. A 401 shows the login screen. `POST /auth/login` checks the password against the hash, creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
 3. **Every request after that:** the browser sends the cookie by itself. `current_user` hashes it, finds the matching `login_sessions` row (not expired, account not disabled) and lets the request through. Otherwise it's a 401, and the page shows the login screen again; logging in continues where you were.
 4. **Log out:** `POST /auth/logout` deletes the row, so that cookie stops working at once, even if someone copied it. The page also forgets its session id and draft (the browser may be shared).
@@ -173,7 +175,19 @@ Why these choices:
 - **The cookie** is `HttpOnly` (page scripts can't read it, so injected JavaScript can't steal it), `SameSite=Lax` (other websites can't make your browser send it with their requests) and, with `COOKIE_SECURE=true` behind HTTPS, sent over HTTPS only. It lasts `LOGIN_DAYS` (30 by default).
 - **Only the token's hash is stored**, so the `login_sessions` table can't be used to log in either.
 
-The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. ### Step 0c: you only see your own data
+The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. ### Step 0b-bis: someone you invite creates their account
+
+1. **You make a code:** `docker compose exec api python scripts/create_invite.py --email marie@example.com --note "Marie"` prints a code such as `K7QM-2XPA-9RTD`, once. You send it, with the email you typed, to that person. ([invites.py](app/auth/invites.py): 12 random characters from 31 that can't be confused, like 0 and O; about 59 bits, far too many to guess.)
+2. **They register:** on the login screen, **Create an account** (or http://localhost:8000/#register) asks for their email, a password and the code. `POST /auth/register` ([routes.py](app/auth/routes.py)) checks the code: its hash must match an `invites` row that is unused, not expired (14 days by default, `--days`) and made for **this email**. Lowercase, spaces and missing dashes don't matter.
+3. **The account is created** and they are logged in at once (same cookie as a login). The invite is marked used (`used_at`, `used_by`) in the same database transaction, and the row is locked while it is checked (`SELECT ... FOR UPDATE`), so two registrations sent at the same moment can't both use one code.
+
+Why it is built this way:
+- **One code, one person, one email:** a forwarded code is useless to anyone else, and a used code is refused.
+- **Same message for every bad code** (unknown, expired, used, or another email's), so trying codes teaches nothing. Only with the right code for that email does the answer say "this email already has an account: log in instead".
+- **Checked before spending:** a too-short password or a malformed email is refused before the code is touched, so the person can simply try again.
+- **Only the code's hash is stored** (like login tokens), so the database can't be used to register. A lost code can't be shown again: make a new one.
+
+### Step 0c: you only see your own data
 
 Every interview, document and chunk has a `user_id` (migration 0006); a session belongs to its interview. So:
 
@@ -385,7 +399,7 @@ There are two kinds of tables in the same Postgres database:
 | Tables | Owned by | Holds |
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
-| `users`, `login_sessions` | us (migration 0005; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
+| `users`, `login_sessions`, `invites` | us (migrations 0005 and 0007; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
@@ -466,6 +480,7 @@ docker compose exec api pytest -q
 - that the interview's language reaches the prompts and both speech providers;
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
+- registration ([tests/test_register.py](tests/test_register.py)): a valid code creates and logs in the account and is used up; sloppy typing is accepted; a code works once and only for its email; unknown, expired, used and other-email codes get the same answer and don't burn the code; weak passwords and existing accounts are refused without spending it; only the hash is stored;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
 - that the technical types use the question bank and that system design allows 3 follow-ups;
@@ -496,6 +511,7 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | --- | --- |
 | start everything | `docker compose up -d` |
 | create an account (your own: add `--admin`) | `docker compose exec api python scripts/create_user.py --email you@example.com` |
+| invite someone (prints a one-use code for that email) | `docker compose exec api python scripts/create_invite.py --email them@example.com --note "who"` |
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
@@ -604,7 +620,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
 | 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned (after 4.6, so it can count per user) |
-| 4.6. Accounts: email, password and an invite code; each user sees only their own data | steps 1-2 built and tested: login, logout, accounts by script, login screen, CLI login; each user sees only their own data. Next: invite codes and registration |
+| 4.6. Accounts: email, password and an invite code; each user sees only their own data | steps 1-3 built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration. Next: hardening (login limits, Origin check, delete my account, admin scripts) |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

@@ -93,8 +93,8 @@ All four modes share this graph; they differ only in prompts, rubrics and questi
 
 | Table | Holds | Key columns |
 | --- | --- | --- |
-| `users` | One account (Phase 4.6) | email (unique, lowercased), `password_hash` (Argon2), is_admin, disabled_at, `invite_id` |
-| `invites` | Invite codes I hand out (Phase 4.6) | `code_hash` (never the code itself), note, max_uses, uses, expires_at |
+| `users` | One account (Phase 4.6) | email (unique, lowercased), `password_hash` (Argon2), is_admin, disabled_at |
+| `invites` | Invite codes I hand out (Phase 4.6) | `code_hash` (never the code itself), `email` (the only address it works for), note, expires_at, `used_at`, `used_by` (one use) |
 | `login_sessions` | Who is logged in (Phase 4.6) | `user_id`, `token_hash`, expires_at, last_seen_at; deleting the row logs out |
 | `interviews` | One upcoming interview | `user_id`, company, role, date, interviewers, mode, `brief` (JSON), brief status |
 | `documents` | Uploaded files and pasted texts | `user_id`, `interview_id` (null for the CV), doc_type, source, S3 key / raw text |
@@ -111,8 +111,8 @@ LangGraph's Postgres checkpointer keeps its own tables for graph state. Sessions
 
 Before the public URL, people can only use the app with an account, and they can only create one with an invite code that I give them. Everything is built in the app (no Cognito / Auth0): a few invited users don't need more, and it stays readable.
 
-1. **Invite:** `python scripts/create_invite.py --uses 1 --days 14 --note "Marie"` prints a code such as `K7QM-2XPA-9RTD` once. I send it to the person.
-2. **Register:** email, password (at least 10 characters) and the code. A valid code creates the account and logs the person in. A wrong, expired or used-up code always gets the same message.
+1. **Invite:** `python scripts/create_invite.py --email marie@example.com --days 14 --note "Marie"` prints a code such as `K7QM-2XPA-9RTD` once. I send it, with that email, to the person.
+2. **Register:** email, password (at least 10 characters) and the code. A valid code for that email creates the account and logs the person in. A wrong, expired, used or other-email code always gets the same message.
 3. **Log in:** email and password; the login lasts 30 days, or until logout.
 4. **Isolation:** each user sees only their own interviews, CV, documents and sessions.
 
@@ -237,7 +237,7 @@ Details in [Accounts and access](#accounts-and-access). Each step ends with its 
 
 - [x] **Users and login:** `users` and `login_sessions` tables, Argon2 hashing, the login cookie, `/auth/login`, `/auth/logout`, `/auth/me`, a script that creates my admin account (`scripts/create_user.py`). Also built now, so nothing breaks while routes need a login: the login screen on the web page (registration comes in step 3) and the CLI login. Check: I log in and out, and the API answers 401 without the cookie.
 - [x] **Ownership:** `user_id` on interviews, documents and chunks; existing rows given to me; `current_user` and ownership helpers on every route; the CV search filtered by user. Check: a second test account gets 404 on my interview, sessions and CV, and my CV never appears in its search results.
-- [ ] **Invites and registration:** `invites` table, `create_invite.py`, `/auth/register`, a registration screen on the web page (same palette and fonts), reached from a "Create an account" link on the login screen. Check: a one-use code works once, then is refused with a clear message.
+- [x] **Invites and registration:** `invites` table, `create_invite.py`, `/auth/register`, a registration screen on the web page (same palette and fonts), reached from a "Create an account" link on the login screen. Check: a one-use code works once, then is refused with a clear message.
 - [ ] **Hardening:** login and registration limits, the `Origin` check, "Delete my account", the admin scripts (list, disable, reset password), a short privacy note at registration. Check: the 6th wrong password is blocked, and no row of a deleted user remains (checkpoints included).
 - [ ] Tests for each step (a logged-in client fixture for the existing tests; isolation between two users); HOW_IT_WORKS.md and README updated.
 

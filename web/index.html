@@ -5,8 +5,9 @@ Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the w
 The page only shows things and sends requests to the API; app.js holds the logic and
 style.css the look. There are five panels, and app.js shows one at a time:
   0. login     - email and password; shown first when you aren't logged in, and whenever the
-                 API answers 401 (your login ended). Accounts are created with
-                 scripts/create_user.py for now (registration with an invite code comes later)
+                 API answers 401 (your login ended). "Create an account" switches to the
+                 registration form: email, password and the invite code you were given
+                 (scripts/create_invite.py). http://localhost:8000/#register opens it directly
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
@@ -71,7 +72,25 @@ No build step and no framework: edit a file, reload the page.
           <input id="login-password" name="password" type="password" autocomplete="current-password" required>
         </label>
         <button type="submit" class="btn btn-primary btn-large">Log in</button>
-        <p class="hint auth-note">No account yet? Accounts are by invitation: ask the person who runs this app for one.</p>
+        <p class="hint auth-note">Got an invite code? <a href="#register" id="to-register">Create an account</a></p>
+      </form>
+
+      <form id="register-form" class="panel auth-card" hidden>
+        <h2>Create an account</h2>
+        <p class="hint">Accounts are by invitation. Use the email address your invite code was made for.</p>
+        <label>Email
+          <input name="email" type="email" autocomplete="username" required>
+        </label>
+        <label>Password
+          <span class="hint">At least 10 characters.</span>
+          <input name="password" type="password" autocomplete="new-password" minlength="10" required>
+        </label>
+        <label>Invite code
+          <span class="hint">Like K7QM-2XPA-9RTD. Capitals and dashes don't matter.</span>
+          <input name="code" type="text" autocomplete="off" spellcheck="false" required>
+        </label>
+        <button type="submit" class="btn btn-primary btn-large">Create my account</button>
+        <p class="hint auth-note">Already have an account? <a href="#login" id="to-login">Log in</a></p>
       </form>
     </section>
 

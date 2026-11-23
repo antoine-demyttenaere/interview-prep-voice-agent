@@ -16,6 +16,8 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 - User: one account (email + password hash). LoginSession: one logged-in browser or CLI run; its
   token lives in a cookie and only a hash of it is stored here (app/auth/ uses both).
   Not to be confused with Session above, which is a practice run.
+- Invite: a one-use code for one email address (scripts/create_invite.py); registering with it
+  creates the account (POST /auth/register). Only a hash of the code is stored.
 
 Who owns what: interviews, documents and chunks have a user_id; sessions belong to their
 interview. app/auth/ownership.py checks it on every request (someone else's row answers 404).
@@ -151,3 +153,18 @@ class LoginSession(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship()
+
+
+class Invite(Base):
+    """A one-use invite code, valid for one email until expires_at. code_hash is its SHA-256."""
+
+    __tablename__ = "invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)  # lowercased
+    note: Mapped[str] = mapped_column(String(200), default="")  # e.g. who it is for
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    used_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

@@ -1,13 +1,19 @@
-"""The account routes: log in, log out, and "who am I?".
+"""The account routes: register with an invite code, log in, log out, and "who am I?".
 
+- POST /auth/register {email, password, code} -> creates the account, logs it in (cookie), 201
 - POST /auth/login   {email, password} -> sets the "login" cookie, returns {email, is_admin}
 - POST /auth/logout  deletes this login (the cookie stops working at once) and clears the cookie
 - GET  /auth/me      {email, is_admin} of the logged-in user, or 401
 
 Mounted by app/main.py. Uses passwords.py, tokens.py and deps.py next to it, and the users and
 login_sessions tables (app/db/models.py). The web page (web/app.js) and the terminal client
-(scripts/interview_cli.py) both call these routes. Accounts are created with
-scripts/create_user.py for now; registration with an invite code comes in Phase 4.6 step 3.
+(scripts/interview_cli.py) both call these routes.
+
+Registering needs an invite code made for that exact email (scripts/create_invite.py,
+app/auth/invites.py). A code that is unknown, expired, already used or made for another email
+always gets the same message, so trying codes teaches nothing. Only once the code is right for
+this email does the answer say whether the email already has an account. Admin accounts are
+only made with scripts/create_user.py --admin, never by registering.
 
 The cookie, in short: the browser stores it and sends it back with every request to this
 server. It is
@@ -18,6 +24,7 @@ server. It is
 A wrong email and a wrong password get the same answer, so nobody can find out who has an account.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -26,7 +33,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as DB
 
 from app.auth.deps import current_login, current_user
-from app.auth.passwords import check_password, hash_password, needs_rehash
+from app.auth.invites import find_usable_invite
+from app.auth.passwords import check_password, hash_password, needs_rehash, password_problem
 from app.auth.tokens import COOKIE_NAME, hash_token, new_token
 from app.config import get_settings
 from app.db.models import LoginSession, User
@@ -35,6 +43,8 @@ from app.db.session import get_db
 router = APIRouter(prefix="/auth", tags=["accounts"])
 
 WRONG_LOGIN = "Wrong email or password."
+BAD_INVITE = "This invite code isn't valid for this email address. Check both, or ask for a new code."
+EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # something@something.something
 
 
 class LoginIn(BaseModel):
@@ -50,6 +60,51 @@ def user_out(user: User) -> dict:
     return {"email": user.email, "is_admin": user.is_admin}
 
 
+def _start_login(db: DB, user: User, response: Response) -> None:
+    """Create a login for `user` and send its token as the cookie (used by login and register)."""
+    now = datetime.now(timezone.utc)
+    settings = get_settings()
+    token = new_token()
+    db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.expires_at <= now))
+    db.add(LoginSession(user_id=user.id, token_hash=hash_token(token),
+                        expires_at=now + timedelta(days=settings.login_days)))
+    db.commit()
+    response.set_cookie(
+        COOKIE_NAME, token,
+        max_age=settings.login_days * 24 * 3600,
+        httponly=True, samesite="lax", secure=settings.cookie_secure, path="/",
+    )
+
+
+class RegisterIn(BaseModel):
+    email: str
+    password: str
+    code: str
+
+
+@router.post("/register", status_code=201)
+def register(body: RegisterIn, response: Response, db: DB = Depends(get_db)) -> dict:
+    email = normalize_email(body.email)
+    if not EMAIL_SHAPE.match(email):
+        raise HTTPException(422, "Please enter a valid email address.")
+    problem = password_problem(body.password)
+    if problem:
+        raise HTTPException(422, problem)
+
+    invite = find_usable_invite(db, body.code, email)
+    if not invite:
+        raise HTTPException(400, BAD_INVITE)
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(409, "This email already has an account: log in instead.")
+
+    user = User(email=email, password_hash=hash_password(body.password))
+    db.add(user)
+    db.flush()  # gives the user its id
+    invite.used_at, invite.used_by = datetime.now(timezone.utc), user.id
+    _start_login(db, user, response)  # commits the user, the used invite and the login together
+    return user_out(user)
+
+
 @router.post("/login")
 def login(body: LoginIn, response: Response, db: DB = Depends(get_db)) -> dict:
     user = db.scalar(select(User).where(User.email == normalize_email(body.email)))
@@ -58,20 +113,7 @@ def login(body: LoginIn, response: Response, db: DB = Depends(get_db)) -> dict:
 
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)
-
-    now = datetime.now(timezone.utc)
-    settings = get_settings()
-    token = new_token()
-    db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.expires_at <= now))
-    db.add(LoginSession(user_id=user.id, token_hash=hash_token(token),
-                        expires_at=now + timedelta(days=settings.login_days)))
-    db.commit()
-
-    response.set_cookie(
-        COOKIE_NAME, token,
-        max_age=settings.login_days * 24 * 3600,
-        httponly=True, samesite="lax", secure=settings.cookie_secure, path="/",
-    )
+    _start_login(db, user, response)
     return user_out(user)
 
 

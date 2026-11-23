@@ -13,16 +13,17 @@ The app runs in Docker Compose (Windows host, PowerShell). The project folder is
 - All tests: `docker compose exec api pytest -q`
 - One test: `docker compose exec api pytest -q tests/test_graph_flow.py::test_end_endpoint`
 - New migration: `docker compose exec api alembic revision --autogenerate -m "add X"`, review the file, then `docker compose restart api`
+- Create an account (needed to use the web page and the CLI): `docker compose exec api python scripts/create_user.py --email you@example.com [--admin]` (asks for the password, or reads `NEW_USER_PASSWORD`)
 - Real Claude + LangSmith check: `docker compose exec api python scripts/smoke_claude.py`
 - Answer-scoring eval (real Claude, costs money, ~2 min): `./scripts/eval.ps1` (defaults to `--reps 2`). A quick pilot: `./scripts/eval.ps1 --reps 1 --ids strong-incident,no-answer-skip`. Add `--no-private` to skip the private cases. Run it after changing a prompt, rubric or model.
-- Typed interview in a terminal: `python scripts/interview_cli.py new|start|resume ...`, run on the host, not in the container (standard library only, talks to the API over HTTP; see HOW_IT_WORKS.md section 13)
+- Typed interview in a terminal: `python scripts/interview_cli.py new|start|resume ...`, run on the host, not in the container (standard library only, talks to the API over HTTP; logs in with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or asks; see HOW_IT_WORKS.md section 13)
 - After editing `question_bank/*.yaml`: `docker compose exec api python scripts/seed_question_bank.py` (syncs the table and embeds only new questions; it also runs on every container start)
 - Re-embed documents: `docker compose exec api python scripts/embed_documents.py` (only documents without chunks), add `--all` after changing the chunk size or embedding model
 - After editing `requirements.txt` or the Dockerfile: `docker compose up -d --build`. After editing `.env`: `docker compose up -d --force-recreate api`.
 
 There is no linter or formatter config. Postgres is on host port **5433** (`app` / `app`, database `interview`).
 
-Tests need the `db` container running. They use fakes for Claude, Voyage, Deepgram and ElevenLabs ([tests/conftest.py](tests/conftest.py)), so they make no API calls. They run against the real prompts, graph, API and Postgres checkpointer, in a separate `interview_test` database that is created and migrated automatically. The fake Claude asks for a follow-up when an answer contains "vague". When you add a node or a structured-output schema, extend the fake.
+Tests need the `db` container running. They use fakes for Claude, Voyage, Deepgram and ElevenLabs ([tests/conftest.py](tests/conftest.py)), so they make no API calls. They run against the real prompts, graph, API and Postgres checkpointer, in a separate `interview_test` database that is created and migrated automatically. The fake Claude asks for a follow-up when an answer contains "vague". When you add a node or a structured-output schema, extend the fake. Every test runs logged in as `tests@example.com` (the autouse `logged_in` fixture overrides `current_user`); a test that needs the real cookie check takes the `real_auth` fixture, as in [tests/test_auth.py](tests/test_auth.py).
 
 ## Architecture in brief
 
@@ -33,6 +34,7 @@ Tests need the `db` container running. They use fakes for Claude, Voyage, Deepgr
 - **Prompts are files** in `prompts/`, re-read on every call and filled with `prompts.render(name, **values)` from `$placeholders`. A missing value raises an error. The header comment is stripped before the prompt is sent. `interviewer_system.md` (which includes the brief) is prompt-cached, so anything that changes per turn (retrieved `$context`, `$bank_questions`) must go in the user prompt, never in the system prompt.
 - **RAG** ([app/rag/](app/rag/)): parse (PDF, DOCX, .eml, text, web page) → chunk → embed with Voyage (`vector(1024)`) → pgvector cosine search, scoped by `interview_id`. A failed search logs a warning and the question is asked without passages, so the interview doesn't stop.
 - **Evals are separate from tests** ([evals/answer_scoring/](evals/answer_scoring/)): tests check that the code works with fakes, while evals check how good Claude's decisions are. `run.py` calls the real `evaluate_answer` node on the labelled cases in `cases.yaml` (plus `evals/private/answer_scoring.yaml`) and grades them in code (`score_in_range`, `off_by`, `follow_up_ok`). Claude errors count as `invalid`, never as wrong scores. Each run is a LangSmith experiment on a dataset whose name includes a hash of the cases, and a local summary goes to `runs/`, compared with the previous run. Token and cost tracking uses `app.llm.record_calls()`.
+- **Accounts** ([app/auth/](app/auth/), Phase 4.6): [main.py](app/main.py) mounts the interview and session routers with `dependencies=[Depends(current_user)]`, so they answer 401 without a valid `login` cookie; `/health`, `/auth/*` and the static page are public. Passwords are Argon2 hashes; the cookie holds a random token and only its SHA-256 hash is stored in `login_sessions` (logout deletes the row). A route that needs the user declares `user: User = Depends(current_user)`. Per-user data ownership and invite-code registration are the next steps in plan.md.
 - **Speech providers sit behind interfaces** ([app/voice/stt.py](app/voice/stt.py), [tts.py](app/voice/tts.py)), selected with `STT_PROVIDER` and `TTS_PROVIDER`. Every setting comes from [app/config.py](app/config.py) through `get_settings()`.
 
 # Project rules

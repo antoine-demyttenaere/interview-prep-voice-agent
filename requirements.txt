@@ -8,6 +8,7 @@
 #   connection pool), alembic (table migrations), pgvector (vector column type, used from Phase 3).
 # AI: anthropic (Claude API), langsmith (tracing), langgraph + its Postgres checkpointer
 #   (the interview graph), pyyaml (reads rubrics/*.yaml).
+# Accounts: argon2-cffi (hashes passwords with Argon2, the recommended algorithm).
 # ">=" means "this version or newer". After editing this file: docker compose up -d --build
 
 fastapi>=0.115
@@ -27,6 +28,7 @@ langsmith>=0.4
 langgraph>=0.6
 langgraph-checkpoint-postgres>=2.0
 pyyaml>=6.0
+argon2-cffi>=23.1
 
 # Tests (kept in the same image for now)
 pytest>=8.3

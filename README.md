@@ -66,11 +66,12 @@ You need Docker Desktop and API keys for the services you want to use:
 ```powershell
 Copy-Item .env.example .env    # then fill in your keys in .env
 docker compose up -d           # applies migrations, seeds the question bank, starts the server
+docker compose exec api python scripts/create_user.py --email you@example.com --admin   # your account
 ```
 
-Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone). The API docs are at http://localhost:8000/docs.
+Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) and log in. The API docs are at http://localhost:8000/docs.
 
-To try it without your own documents, use the fictional CV and job post in [samples/](samples/). To practise in a terminal by typing:
+To try it without your own documents, use the fictional CV and job post in [samples/](samples/). To practise in a terminal by typing (it asks for your email and password):
 
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
@@ -88,7 +89,7 @@ The tests check that the code works and make no API calls. The evals check how g
 
 ## Privacy
 
-The app is meant to run on your own machine. Both ports are bound to `127.0.0.1` because the API has no login.
+The app is meant to run on your own machine, and both ports are bound to `127.0.0.1`. Every interview route needs a login: passwords are stored as Argon2 hashes, and the login cookie is HttpOnly and SameSite=Lax. Keeping each user's data separate, and invite codes, are the next steps of Phase 4.6.
 
 - Your real documents go in `my_docs/`, eval cases built from your own answers go in `evals/private/`, and recordings go in `evals/audio/`. Git ignores all three.
 - Everything in `samples/` and `evals/answer_scoring/cases.yaml` is fictional.
@@ -100,6 +101,7 @@ The app is meant to run on your own machine. Both ports are bound to `127.0.0.1`
 | --- | --- |
 | 0-3: skeleton, typed interview with brief review, voice, document uploads and search, technical interview types | built |
 | 4: evals in LangSmith | in progress (answer-scoring eval done) |
-| 4.5: cost control | planned |
+| 4.6: accounts with email, password and invite code | in progress (login done) |
+| 4.5: cost control, per user | planned (after 4.6) |
 | 5: deployment on AWS with Terraform | planned |
 | 6: streaming, live turn detection, personas | planned |

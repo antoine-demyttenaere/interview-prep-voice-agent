@@ -20,6 +20,7 @@ style.css - the look of the web page (web/index.html).
   recording (talk), teal gradient = finish and get feedback (btn-success), white with an
   indigo outline on hover = secondary actions (btn-ghost).
 - Scores are colored the same everywhere: 1-2 coral (low), 3 indigo (mid), 4-5 teal (high).
+- The login screen is one narrow white card in the middle of the page (.auth-card).
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
   interview (conversation | controls) and the feedback (overview | details) use two columns.
   On a phone everything stacks in one column.
@@ -187,6 +188,13 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .panel-head h2 { margin: 0; }
+
+/* the login screen: one narrow card, centred, a little below the title */
+.auth-card { max-width: 440px; margin: clamp(24px, 8vh, 80px) auto 0; }
+.auth-card h2 { font-size: 1.4rem; margin-bottom: 4px; }
+.auth-card > .hint { margin: 0 0 20px; }
+.auth-card .btn-large { margin-top: 6px; }
+.auth-card .auth-note { margin-top: 18px; text-align: center; }
 .muted { color: var(--muted); font-weight: 400; }
 .small { font-size: 0.9rem; }
 /* a short explanation under a field's name */

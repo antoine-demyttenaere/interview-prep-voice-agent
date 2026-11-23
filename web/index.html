@@ -3,7 +3,10 @@ index.html - the one web page of the app: set up an interview, review the brief,
 
 Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the web/ folder).
 The page only shows things and sends requests to the API; app.js holds the logic and
-style.css the look. There are four panels, and app.js shows one at a time:
+style.css the look. There are five panels, and app.js shows one at a time:
+  0. login     - email and password; shown first when you aren't logged in, and whenever the
+                 API answers 401 (your login ended). Accounts are created with
+                 scripts/create_user.py for now (registration with an invite code comes later)
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
@@ -17,7 +20,8 @@ style.css the look. There are four panels, and app.js shows one at a time:
   4. feedback  - an overview (score, summary, top fixes) and clickable details per criterion
                  and per question
 "New interview" (top right) goes back to the setup form at any time; the button next to it
-switches between light and dark colors.
+switches between light and dark colors. Your email and "Log out" sit next to them once you're
+logged in.
 No build step and no framework: edit a file, reload the page.
 -->
 <!doctype html>
@@ -42,6 +46,8 @@ No build step and no framework: edit a file, reload the page.
     <span class="top-right">
       <span id="session-label" class="muted small"></span>
       <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
+      <span id="account" class="muted small" hidden></span>
+      <button id="logout" type="button" class="btn btn-ghost btn-small" hidden>Log out</button>
       <!-- Light / dark switch: the knob slides to the sun (light) or the moon (dark) -->
       <button id="theme" type="button" class="theme-switch" role="switch" aria-checked="false" aria-label="Dark mode">
         <span class="icon sun"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg></span><span class="icon moon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></span><span class="knob"></span>
@@ -53,8 +59,24 @@ No build step and no framework: edit a file, reload the page.
     <p id="error" class="error" hidden></p>
     <p id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">Working...</span></p>
 
-    <!-- 1. Setup -->
-    <section id="panel-setup">
+    <!-- 0. Log in (app.js shows it first when GET /auth/me answers 401) -->
+    <section id="panel-login" hidden>
+      <form id="login-form" class="panel auth-card">
+        <h2>Log in</h2>
+        <p class="hint">Practise your next interview with your own documents.</p>
+        <label>Email
+          <input id="login-email" name="email" type="email" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="btn btn-primary btn-large">Log in</button>
+        <p class="hint auth-note">No account yet? Accounts are by invitation: ask the person who runs this app for one.</p>
+      </form>
+    </section>
+
+    <!-- 1. Setup (hidden until app.js knows you're logged in) -->
+    <section id="panel-setup" hidden>
       <form id="setup-form" class="panel wizard">
         <!-- Shown when you came back here from a brief: you can return to it unchanged -->
         <div id="editing-banner" class="editing" hidden>

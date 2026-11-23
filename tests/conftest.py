@@ -8,6 +8,10 @@ pytest loads conftest.py automatically.
   chosen by a hash), so texts that share words are close: enough to test that search works.
 - Tests use their own database, interview_test, created and migrated on the first run, so test
   interviews never mix with your real ones. DATABASE_URL is switched before the app reads it.
+- Logged in by default: every test runs as the account tests@example.com, by replacing the
+  current_user dependency (app/auth/deps.py) with that user (autouse fixture `logged_in`), so
+  the interview tests don't have to log in. A test that takes the `real_auth` fixture turns this
+  off and goes through the real cookie check (tests/test_auth.py).
 """
 
 import hashlib
@@ -25,7 +29,15 @@ import pytest  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.orm import Session as DB  # noqa: E402
+
+from app.auth.deps import current_user  # noqa: E402
+from app.auth.passwords import hash_password  # noqa: E402
+from app.db.models import User  # noqa: E402
+from app.db.session import get_engine  # noqa: E402
 from app.graph import nodes  # noqa: E402
+from app.main import app  # noqa: E402
 from app.rag import embeddings  # noqa: E402
 from app.graph.schemas import (  # noqa: E402
     AnswerEvaluation,
@@ -46,6 +58,36 @@ def test_database():
             conn.execute(f'CREATE DATABASE "{TEST_DB}"')
     command.upgrade(Config("alembic.ini"), "head")
     yield
+
+
+TEST_EMAIL = "tests@example.com"
+TEST_PASSWORD = "correct horse battery"
+
+
+@pytest.fixture(scope="session")
+def test_user(test_database) -> User:
+    """The account the tests run as (created once; same password every run)."""
+    with DB(get_engine(), expire_on_commit=False) as db:
+        user = db.scalar(select(User).where(User.email == TEST_EMAIL))
+        if not user:
+            user = User(email=TEST_EMAIL, password_hash=hash_password(TEST_PASSWORD))
+            db.add(user)
+            db.commit()
+        return user
+
+
+@pytest.fixture(autouse=True)
+def logged_in(test_user):
+    """Every request is made as test_user, without a cookie (see the module docstring)."""
+    app.dependency_overrides[current_user] = lambda: test_user
+    yield
+    app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.fixture
+def real_auth(logged_in):
+    """Turns `logged_in` off: requests must carry a real login cookie."""
+    app.dependency_overrides.pop(current_user, None)
 
 BRIEF = InterviewBrief(
     company_summary="Fake Co makes fakes.",

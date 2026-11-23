@@ -15,9 +15,16 @@ show what the session is waiting for (the brief or a question), read your input,
     python scripts/interview_cli.py resume SESSION_ID      # continue a stopped session
 
 API_URL (default http://localhost:8000) selects the server.
+
+Logging in: every command first logs in (POST /auth/login) with INTERVIEW_EMAIL and
+INTERVIEW_PASSWORD if they are set, otherwise it asks (the password isn't shown as you type).
+The server answers with a login cookie; this script keeps it in memory and sends it back with
+every request (the `Cookie` header), like a browser does. Create an account first with
+`docker compose exec api python scripts/create_user.py --email you@example.com`.
 """
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -29,6 +36,7 @@ from pathlib import Path
 
 API = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
 EDIT_FILE = Path("brief_edit.json")
+COOKIE = {}  # {"Cookie": "login=..."} once logged in; added to every request
 
 
 class ApiError(Exception):
@@ -39,7 +47,8 @@ class ApiError(Exception):
 
 def call(method: str, path: str, body: dict | None = None) -> dict:
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(API + path, data=data, method=method, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(API + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json", **COOKIE})
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
             return json.loads(resp.read())
@@ -51,6 +60,26 @@ def call(method: str, path: str, body: dict | None = None) -> dict:
         raise ApiError(exc.code, json.dumps(detail) if not isinstance(detail, str) else detail) from None
     except urllib.error.URLError as exc:
         sys.exit(f"Cannot reach the API at {API} ({exc.reason}). Is `docker compose up` running?")
+
+
+def login() -> None:
+    """Log in and keep the login cookie for the next requests."""
+    email = os.getenv("INTERVIEW_EMAIL") or input("Email: ")
+    password = os.getenv("INTERVIEW_PASSWORD") or getpass.getpass("Password: ")
+    body = json.dumps({"email": email, "password": password}).encode()
+    req = urllib.request.Request(API + "/auth/login", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            for header in resp.headers.get_all("Set-Cookie") or []:
+                if header.startswith("login="):
+                    COOKIE["Cookie"] = header.split(";", 1)[0]  # "login=<token>", without its options
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"Login failed: {json.loads(exc.read()).get('detail', exc.reason)}")
+    except urllib.error.URLError as exc:
+        sys.exit(f"Cannot reach the API at {API} ({exc.reason}). Is `docker compose up` running?")
+    if not COOKIE:
+        sys.exit("Login failed: the server sent no login cookie.")
 
 
 def upload(path: str, fields: dict) -> dict:
@@ -69,7 +98,7 @@ def upload(path: str, fields: dict) -> dict:
     body = b"".join(parts) + f"--{boundary}--\r\n".encode()
     req = urllib.request.Request(
         API + "/documents/upload", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}", **COOKIE},
     )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -221,6 +250,7 @@ def main() -> None:
     resume.add_argument("session_id")
 
     args = parser.parse_args()
+    login()
     try:
         if args.cmd == "new":
             interview = call("POST", "/interviews", {

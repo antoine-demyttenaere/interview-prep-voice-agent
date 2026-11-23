@@ -2,6 +2,12 @@
 app.js - the logic of the web page: talks to the API, records your voice, plays the interviewer.
 
 How it works:
+- Login first: on load, GET /auth/me says whether the browser's login cookie is still valid. If
+  not, the login screen shows (POST /auth/login sets the cookie; the browser then sends it with
+  every request by itself, and page scripts can't read it). Any 401 later (login expired,
+  account disabled) brings the login screen back, and logging in again continues where you
+  were. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
+  reloads the page.
 - Every screen comes from a "view" the API returns (status + what the session is waiting for).
   render(view) shows the right panel: brief review, interview, or feedback.
 - Setup is a 3-step form moved through from left to right: Next / Back, a swipe, a click on the
@@ -96,6 +102,15 @@ async function api(method, path, body, isForm = false) {
     }
   }
   const res = await fetch(path, options);
+  // 401 = not logged in (any more): show the login screen. A wrong password on the login form
+  // is also a 401, but that one is shown as a normal error.
+  if (res.status === 401 && path !== "/auth/login") {
+    showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
+    const err = new Error("Please log in.");
+    err.status = 401;
+    err.loggedOut = true;
+    throw err;
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -117,6 +132,7 @@ async function run(text, action) {
     await action();
   } catch (err) {
     hidePending(); // no "..." left behind when a step fails
+    if (err.loggedOut) return; // the login screen is already showing
     showError(err.message);
     // A failed Claude call leaves the session "stopped": reload the view so Retry appears.
     if (err.status === 502 && state.sessionId) {
@@ -152,7 +168,7 @@ async function speakCurrentQuestion() {
 // ---------- rendering ----------
 
 function showPanel(name) {
-  ["setup", "brief", "interview", "feedback"].forEach((p) => ($(`panel-${p}`).hidden = p !== name));
+  ["login", "setup", "brief", "interview", "feedback"].forEach((p) => ($(`panel-${p}`).hidden = p !== name));
   window.scrollTo({ top: 0 });
 }
 
@@ -984,16 +1000,70 @@ updateThemeButton();
 state.voiceOn = recall("voiceOff") !== "1";
 $("voice-toggle").checked = state.voiceOn;
 
+// ---------- login ----------
+
+// Header: your email and "Log out" when logged in (user = {email, is_admin}), nothing otherwise.
+function setAccount(user) {
+  $("account").textContent = user ? user.email : "";
+  $("account").hidden = !user;
+  $("logout").hidden = !user;
+}
+
+function showLogin(message = "") {
+  if (state.audio) state.audio.pause();
+  setAccount(null);
+  $("session-label").textContent = "";
+  $("leave").hidden = true;
+  showPanel("login");
+  showError(message);
+  $("login-email").focus();
+}
+
 // Continue the last session of this browser, if there is one; otherwise show the setup form,
 // with the draft you were typing.
-restoreDraft();
-const saved = recall("sessionId");
-if (saved) {
-  busy("Loading your last session...");
-  api("GET", `/sessions/${saved}`)
-    .then(render)
-    .catch(() => { remember("sessionId", null); showSetup(0); })
-    .finally(() => busy(""));
-} else {
-  loadStoredCv();
+async function startApp() {
+  restoreDraft();
+  const saved = recall("sessionId");
+  if (!saved) return showSetup(0);
+  try {
+    render(await api("GET", `/sessions/${saved}`));
+  } catch (err) {
+    if (err.loggedOut) return;
+    remember("sessionId", null);
+    showSetup(0);
+  }
 }
+
+$("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = $("login-form").elements;
+  run("Logging in...", async () => {
+    const user = await api("POST", "/auth/login", { email: f.email.value, password: f.password.value });
+    f.password.value = "";
+    setAccount(user);
+    showError("");
+    await startApp();
+  });
+});
+
+$("logout").addEventListener("click", () => {
+  run("Logging out...", async () => {
+    try { await api("POST", "/auth/logout"); } catch (_) {} // already logged out: same result
+    remember("sessionId", null); // this browser may be shared: forget what you were doing
+    clearDraft();
+    location.reload();
+  });
+});
+
+// On load: logged in? Then continue; otherwise api() has shown the login screen.
+(async () => {
+  busy("Loading...");
+  try {
+    setAccount(await api("GET", "/auth/me"));
+    await startApp();
+  } catch (err) {
+    if (!err.loggedOut) showError(`Can't reach the server (${err.message}). Is it running?`);
+  } finally {
+    busy("");
+  }
+})();

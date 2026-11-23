@@ -1,6 +1,6 @@
 # Interview Prep Voice Agent — Plan
 
-Source of truth: the Claude Docs version of this plan. This file is a Markdown copy for Claude Code and other surfaces (as of 2026-11-19).
+Source of truth: the Claude Docs version of this plan. This file is a Markdown copy for Claude Code and other surfaces (as of 2026-11-23).
 
 ## Goal and principles
 
@@ -62,7 +62,7 @@ One FastAPI service in Docker Compose runs the three steps. Postgres keeps the i
 
 Each practice session belongs to an **Interview**: company, role, date, interviewer names, plus the documents I attach to it.
 
-1. **Upload:** PDF, DOCX, `.eml` emails or pasted text (recruiter email, job post, notes from a call). Each file is parsed, split into chunks, embedded with Voyage and stored in pgvector, tagged with `interview_id`, `doc_type` and `source`. My CV is stored once and shared by all interviews.
+1. **Upload:** PDF, DOCX, `.eml` emails or pasted text (recruiter email, job post, notes from a call). Each file is parsed, split into chunks, embedded with Voyage and stored in pgvector, tagged with `interview_id`, `doc_type` and `source`. Each user's CV is stored once and shared by all of that user's interviews (Phase 4.6 adds accounts; until then there is one CV for everyone).
 2. **Brief, which I review:** Claude Sonnet reads all the documents and writes a structured Interview Brief (Pydantic model):
     - company summary and what the role requires
     - likely interview format, and who the interviewers are
@@ -71,7 +71,7 @@ Each practice session belongs to an **Interview**: company, role, date, intervie
 3. **Approval:** the graph pauses with `interrupt()` so I can read, edit or approve the brief before the interview starts.
 4. **During the interview:** the approved brief is always in the system prompt (short, prompt-cached). Each question also triggers a pgvector search for specific details. The retrieved chunks appear in the LangSmith trace.
 
-**Privacy:** recruiter emails contain personal data, and LangSmith traces contain whatever is sent. Keep the MVP local, and mask inputs and outputs in LangSmith for the ingestion steps if needed.
+**Privacy:** recruiter emails contain personal data, and LangSmith traces contain whatever is sent. Keep the MVP local, and mask inputs and outputs in LangSmith for the ingestion steps if needed. Once other people have accounts (Phase 4.6), their CVs and emails would land in my LangSmith traces too, so their inputs are hidden or they are told at registration (open question below).
 
 ## Interviewer graph
 
@@ -93,16 +93,43 @@ All four modes share this graph; they differ only in prompts, rubrics and questi
 
 | Table | Holds | Key columns |
 | --- | --- | --- |
-| `interviews` | One upcoming interview | company, role, date, interviewers, mode, `brief` (JSON), brief status |
-| `documents` | Uploaded files and pasted texts | `interview_id` (null for the CV), doc_type, source, S3 key / raw text |
-| `chunks` | Searchable pieces of documents | `document_id`, text, `embedding vector(1024)`, metadata |
+| `users` | One account (Phase 4.6) | email (unique, lowercased), `password_hash` (Argon2), is_admin, disabled_at, `invite_id` |
+| `invites` | Invite codes I hand out (Phase 4.6) | `code_hash` (never the code itself), note, max_uses, uses, expires_at |
+| `login_sessions` | Who is logged in (Phase 4.6) | `user_id`, `token_hash`, expires_at, last_seen_at; deleting the row logs out |
+| `interviews` | One upcoming interview | `user_id`, company, role, date, interviewers, mode, `brief` (JSON), brief status |
+| `documents` | Uploaded files and pasted texts | `user_id`, `interview_id` (null for the CV), doc_type, source, S3 key / raw text |
+| `chunks` | Searchable pieces of documents | `document_id`, `user_id` and `interview_id` (copied from the document), text, `embedding vector(1024)`, metadata |
 | `question_bank` | Seeded questions for technical and system design | mode, topic, difficulty, text, embedding |
 | `sessions` | One practice run | `interview_id`, LangGraph `thread_id`, started / ended |
 | `turns` | Each question and answer | `session_id`, question, transcript, score, LangSmith `run_id` |
 | `feedback` | Final report and my rating of it | `session_id`, rubric scores, strengths, fixes, thumbs up / down |
-| `usage` | Each paid API call (Phase 4.5) | provider, model, units, cost_usd, session_id, created_at |
+| `usage` | Each paid API call (Phase 4.5) | provider, model, units, cost_usd, `user_id`, session_id, created_at |
 
-LangGraph's Postgres checkpointer keeps its own tables for graph state.
+LangGraph's Postgres checkpointer keeps its own tables for graph state. Sessions and checkpoints need no `user_id`: they belong to an interview, which belongs to a user.
+
+## Accounts and access
+
+Before the public URL, people can only use the app with an account, and they can only create one with an invite code that I give them. Everything is built in the app (no Cognito / Auth0): a few invited users don't need more, and it stays readable.
+
+1. **Invite:** `python scripts/create_invite.py --uses 1 --days 14 --note "Marie"` prints a code such as `K7QM-2XPA-9RTD` once. I send it to the person.
+2. **Register:** email, password (at least 10 characters) and the code. A valid code creates the account and logs the person in. A wrong, expired or used-up code always gets the same message.
+3. **Log in:** email and password; the login lasts 30 days, or until logout.
+4. **Isolation:** each user sees only their own interviews, CV, documents and sessions.
+
+**Security choices:**
+
+| Topic | Choice | Why |
+| --- | --- | --- |
+| Passwords | Argon2 hash (`argon2-cffi`) | The current recommended hash; never logged or returned |
+| Staying logged in | Random token in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` on AWS); only its hash is stored | The page and the API share one origin, so a cookie is simpler and safer than a token in localStorage; logout works immediately |
+| Cross-site requests (CSRF) | `SameSite=Lax` plus a check that the `Origin` header of every POST / PATCH / DELETE is the app's own | Covers the file-upload forms too |
+| Someone else's data | Every route takes the current user; helpers such as `owned_interview()` answer **404, not 403** | One place to get it right; IDs can't be probed |
+| Guessing | 5 failed logins per email per 15 minutes; a limit on registrations per IP; counts in Postgres | Works with several containers on AWS |
+| Admin | Scripts only: create invite, list users, disable user, reset password | No admin page to secure |
+| Forgotten password | `reset_password.py` prints a temporary password I send to the person | No email provider needed for a few known users |
+| Leaving | "Delete my account" removes interviews, documents, chunks, sessions and their LangGraph checkpoints (by `thread_id`, as they have no foreign key) | Their personal data must be removable |
+
+**Existing data:** the migration adds the `user_id` columns as optional, a script creates my admin account and gives it every existing row, then a second migration makes `user_id` required.
 
 ## Cost control
 
@@ -145,7 +172,9 @@ All paid APIs together stay under **$10 a month** (AWS hosting is budgeted separ
 | Web page imports | 3 per interview, 50,000 characters each | same reason |
 | Eval run (Phase 4) | $1 per run, counted in the monthly budget | a full eval run calls Claude many times |
 
-**How it is enforced:** a `usage` table records every paid call: provider, model, units (tokens, audio seconds, characters) and cost in dollars. Prices are kept in `pricing.yaml`, so a price change is a one-line edit. A guard checks the budgets before each session starts and before each paid call. The web page shows the month's spend. Every limit is set in `.env` (e.g. `BUDGET_MONTHLY_USD`). LangSmith's cost per trace is a cross-check for Claude.
+**Several users:** invited users spend on my API keys, so the limits above apply per user (each user has their own daily limits), while the monthly and daily budgets stay global caps for everyone together.
+
+**How it is enforced:** a `usage` table records every paid call: provider, model, units (tokens, audio seconds, characters), cost in dollars and the user. Prices are kept in `pricing.yaml`, so a price change is a one-line edit. A guard checks the budgets before each session starts and before each paid call. The web page shows the month's spend. Every limit is set in `.env` (e.g. `BUDGET_MONTHLY_USD`). LangSmith's cost per trace is a cross-check for Claude.
 
 ## Phases
 
@@ -191,18 +220,33 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 **Check:** an eval run report in LangSmith that I can compare across prompt versions.
 
 ### Phase 4.5: Cost control (before the public URL)
-- [ ] `usage` table and `pricing.yaml`; record the cost of every Claude, Deepgram, ElevenLabs and Voyage call
+
+Built after Phase 4.6, so that spending and limits can be counted per user.
+
+- [ ] `usage` table (with `user_id`) and `pricing.yaml`; record the cost of every Claude, Deepgram, ElevenLabs and Voyage call
 - [ ] Budget guard: warn at 80%, refuse new sessions at 100% of the monthly or daily budget, let a running interview finish
-- [ ] Per-session and per-input limits from the Cost control section, set in `.env`
+- [ ] Per-session and per-input limits from the Cost control section, set in `.env`, counted per user
 - [ ] Save each question's audio so replays are free
 - [ ] Month's spend shown on the web page; a cap set in each provider's console
 
 **Check:** with the monthly budget set to $0.01, a running interview still ends with feedback and a new one is refused with a clear message. The recorded cost of one real interview is within 20% of what the providers' dashboards show.
 
+### Phase 4.6: Accounts with invite codes (before the public URL, before 4.5)
+
+Details in [Accounts and access](#accounts-and-access). Each step ends with its own check.
+
+- [x] **Users and login:** `users` and `login_sessions` tables, Argon2 hashing, the login cookie, `/auth/login`, `/auth/logout`, `/auth/me`, a script that creates my admin account (`scripts/create_user.py`). Also built now, so nothing breaks while routes need a login: the login screen on the web page (registration comes in step 3) and the CLI login. Check: I log in and out, and the API answers 401 without the cookie.
+- [ ] **Ownership:** `user_id` on interviews, documents and chunks; existing rows given to me; `current_user` and ownership helpers on every route; the CV search filtered by user. Check: a second test account gets 404 on my interview, sessions and CV, and my CV never appears in its search results.
+- [ ] **Invites and registration:** `invites` table, `create_invite.py`, `/auth/register`, a registration screen on the web page (same palette and fonts), reached from a "Create an account" link on the login screen. Check: a one-use code works once, then is refused with a clear message.
+- [ ] **Hardening:** login and registration limits, the `Origin` check, "Delete my account", the admin scripts (list, disable, reset password), a short privacy note at registration. Check: the 6th wrong password is blocked, and no row of a deleted user remains (checkpoints included).
+- [ ] Tests for each step (a logged-in client fixture for the existing tests; isolation between two users); HOW_IT_WORKS.md and README updated.
+
+**Check:** someone I invite registers with their code, runs an interview, and can't see anything of mine; I can't see theirs through the web page either.
+
 ### Phase 5: AWS with Terraform
 - [ ] Terraform modules: network, ECR, ECS Fargate, RDS Postgres (pgvector), S3 for uploads, ALB with HTTPS, Secrets Manager
 - [ ] Terraform state in S3; deploys through GitHub Actions
-- [ ] Single user with a simple password (Cognito later if needed)
+- [ ] Accounts from Phase 4.6 behind HTTPS (`COOKIE_SECURE=true`); Cognito only if the built-in accounts stop being enough
 - [ ] Cheaper fallback: one EC2 instance running the same Compose file behind Caddy
 
 **Check:** a voice interview works on the public HTTPS URL (the mic requires HTTPS outside localhost).
@@ -220,6 +264,7 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 ```
 app/
   api/          # FastAPI routes
+  auth/         # passwords, login cookie, current_user, /auth routes (Phase 4.6)
   graph/        # state.py, nodes.py, build.py
   voice/        # stt.py, tts.py (interfaces + Deepgram / ElevenLabs implementations)
   rag/          # parsers, ingest.py, retrieve.py
@@ -265,4 +310,7 @@ The proposal is Deepgram + ElevenLabs. No public per-vendor usage figures exist,
 - [x] Does Claude write the code for each phase, or guide me while I write it? **Claude writes it**, explained for beginners (file headers + HOW_IT_WORKS.md)
 - [x] Interview languages: **English, French and Spanish from the MVP** (decided 2026-11-19)
 - [x] Which languages should the feedback report be in? **The interview's language** (default chosen with the language decision; easy to change in `prompts/final_feedback.md`)
+- [x] Invite codes: one code per person or a shared code? **One code per person** (decided 2026-11-23)
+- [x] Should a code only work for the email I made it for? **Yes, each code is locked to one email** (decided 2026-11-23)
+- [ ] Other users' data in my LangSmith traces: hide their inputs and outputs, or tell them at registration?
 - [ ] ElevenLabs plan: the free tier (about 5 interviews a month) or a paid plan? A subscription would use a large share of the $10 budget.

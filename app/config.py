@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     embedding_model: str = "voyage-4"  # 1024 numbers per text, multilingual
     retrieval_k: int = 3  # document passages added to each question
 
+    # Accounts (Phase 4.6). The login cookie: how long it lasts, and whether the browser may send
+    # it only over HTTPS. Keep cookie_secure false on http://localhost, set it true on AWS.
+    login_days: int = 30
+    cookie_secure: bool = False
+
     @property
     def psycopg_url(self) -> str:
         """Plain libpq URL (no SQLAlchemy driver suffix) for psycopg / the checkpointer."""

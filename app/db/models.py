@@ -12,6 +12,9 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 - QuestionBankItem: a seeded technical / system design question, with its embedding.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
   in LangGraph's checkpoint tables, under the session's thread_id.
+- User: one account (email + password hash). LoginSession: one logged-in browser or CLI run; its
+  token lives in a cookie and only a hash of it is stored here (app/auth/ uses both).
+  Not to be confused with Session above, which is a practice run.
 
 Editing a class does not change the database by itself: also add a migration in migrations/versions/.
 """
@@ -20,7 +23,7 @@ import uuid
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -110,3 +113,34 @@ class Session(Base):
     thread_id: Mapped[str] = mapped_column(String(100), unique=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class User(Base):
+    """One account. The email is stored lowercased, so "Ana@X.com" and "ana@x.com" are the same."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(200))  # Argon2, never the password itself
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # set = can't log in
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoginSession(Base):
+    """One login: the cookie holds a random token, this row holds its SHA-256 hash.
+
+    Deleting the row logs that browser out at once. A row past expires_at no longer counts.
+    """
+
+    __tablename__ = "login_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship()

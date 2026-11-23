@@ -80,6 +80,11 @@ app/
   main.py              The server's entry point: starts the checkpointer, mounts the routes, /health
   config.py            Settings read from .env (models, limits, database URL)
   llm.py               The only place that calls Claude: structured() and text_reply()
+  auth/                Accounts (Phase 4.6)
+    passwords.py       Hashes and checks passwords (Argon2)
+    tokens.py          The random login token in the cookie, and its hash
+    deps.py            current_user: who is calling, or 401
+    routes.py          /auth/login, /auth/logout, /auth/me
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
     sessions.py        Start a session, resume it with your reply, retry a failed step
@@ -102,21 +107,22 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0004
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0005
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
 scripts/
-  interview_cli.py     The terminal interview (the "client")
+  interview_cli.py     The terminal interview (the "client"); logs in first
+  create_user.py       Creates an account (your own admin account, or a test one)
   smoke_claude.py      Quick check that the key, models and tracing work
   seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
   embed_documents.py   Embeds documents that have no chunks yet
   check-phase0.ps1     Phase 0 check in one command
 web/
-  index.html           The web page: setup (3 steps + My CV), brief, interview, feedback
-  app.js               Its logic: API calls, click-to-talk recording, audio playback, end / leave
+  index.html           The web page: login, setup (3 steps + My CV), brief, interview, feedback
+  app.js               Its logic: login, API calls, click-to-talk recording, audio playback, end / leave
   style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark
 samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
@@ -147,10 +153,26 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0004). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the API has no login and serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0005). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the API has no login and serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
+
+### Step 0b: you log in
+
+Every interview and session route needs a login; only `/health`, `/auth/login` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them.
+
+1. **Create your account once:** `docker compose exec api python scripts/create_user.py --email you@example.com --admin`. It asks for a password (at least 10 characters) and stores only its **Argon2 hash** ([passwords.py](app/auth/passwords.py)) in the `users` table. (Registration with an invite code comes in Phase 4.6 step 3.)
+2. **Log in:** the page calls `GET /auth/me` on load. A 401 shows the login screen. `POST /auth/login` checks the password against the hash, creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
+3. **Every request after that:** the browser sends the cookie by itself. `current_user` hashes it, finds the matching `login_sessions` row (not expired, account not disabled) and lets the request through. Otherwise it's a 401, and the page shows the login screen again; logging in continues where you were.
+4. **Log out:** `POST /auth/logout` deletes the row, so that cookie stops working at once, even if someone copied it. The page also forgets its session id and draft (the browser may be shared).
+
+Why these choices:
+- **Hash, not password:** the database never holds a password; Argon2 is deliberately slow, so a stolen database can only be guessed at very slowly. A wrong email and a wrong password get the same message, and the check takes the same time, so nobody can find out who has an account.
+- **The cookie** is `HttpOnly` (page scripts can't read it, so injected JavaScript can't steal it), `SameSite=Lax` (other websites can't make your browser send it with their requests) and, with `COOKIE_SECURE=true` behind HTTPS, sent over HTTPS only. It lasts `LOGIN_DAYS` (30 by default).
+- **Only the token's hash is stored**, so the `login_sessions` table can't be used to log in either.
+
+The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. For now every logged-in account can see every interview; each user seeing only their own data is the next step (Phase 4.6 step 2).
 
 ### Step 1: create the interview and add documents
 
@@ -354,6 +376,7 @@ There are two kinds of tables in the same Postgres database:
 | Tables | Owned by | Holds |
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
+| `users`, `login_sessions` | us (migration 0005) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
@@ -435,7 +458,10 @@ docker compose exec api pytest -q
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
-- that the technical types use the question bank and that system design allows 3 follow-ups.
+- that the technical types use the question bank and that system design allows 3 follow-ups;
+- accounts ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login, a wrong password and an unknown email look the same, the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused, and only hashes are stored.
+
+**Logged in by default:** the other tests don't log in. A fixture in [conftest.py](tests/conftest.py) replaces `current_user` with a test account (`tests@example.com`) for every test; the account tests take the `real_auth` fixture, which turns that off and goes through the real cookie check.
 
 They don't check how good Claude's answers are. That's the job of the evals in Phase 4.
 
@@ -459,11 +485,12 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | I want to... | Command |
 | --- | --- |
 | start everything | `docker compose up -d` |
+| create an account (your own: add `--admin`) | `docker compose exec api python scripts/create_user.py --email you@example.com` |
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
 | run a spoken interview | open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) |
-| run a typed interview in a terminal | `python scripts/interview_cli.py new --company "..." --role "..." --mode technical_backend --doc job_post:post.pdf --doc recruiter_email:mail.eml --cv cv.pdf` |
+| run a typed interview in a terminal (it asks for your email and password, or reads `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD`) | `python scripts/interview_cli.py new --company "..." --role "..." --mode technical_backend --doc job_post:post.pdf --doc recruiter_email:mail.eml --cv cv.pdf` |
 | index documents added before Phase 3 (or when Voyage failed) | `docker compose exec api python scripts/embed_documents.py` |
 | reload the question bank after editing question_bank/ | `docker compose exec api python scripts/seed_question_bank.py` (also runs on every start) |
 | see or remove your stored CV | `GET /documents/cv`, then `DELETE /documents/{id}` (from http://localhost:8000/docs) |
@@ -532,12 +559,15 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **API / route / endpoint**: a URL the server answers, such as `POST /sessions/{id}/resume`.
 - **Checkpointer**: saves the graph's state after every step, so it can resume later.
 - **Container**: an isolated, reproducible environment that runs one program (here: the server, or Postgres).
+- **Argon2 / password hash**: a one-way fingerprint of a password; the login check hashes what you type and compares. Argon2 is slow on purpose, to make guessing expensive.
 - **Base64**: a way to write binary data (like audio) as plain text, so it fits inside JSON.
 - **Effort**: how much Claude thinks before answering (low, medium or high).
+- **Cookie**: a small value the server asks the browser to keep and send back with every request; here it holds the random login token.
 - **Chunk**: a piece of a document (a few paragraphs) that is embedded and searched on its own.
 - **Cosine distance / similarity**: how far apart two embeddings point; similarity 1 means the same meaning, 0 unrelated.
 - **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers.
 - **HNSW index**: a search index that links each vector to its neighbours, so the closest vectors are found without checking every row.
+- **401 / Unauthorized**: the HTTP answer meaning "log in first".
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
 - **Migration**: a numbered script that changes the database's tables in a controlled way.
 - **Node**: one step of the graph, written as a Python function.
@@ -563,7 +593,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 2. Voice: speech-to-text, text-to-speech, one-page web UI, English / French / Spanish | built and tested with fake providers; the spoken check (under ~3 s per turn) needs the Deepgram and ElevenLabs keys |
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
-| 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned |
+| 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned (after 4.6, so it can count per user) |
+| 4.6. Accounts: email, password and an invite code; each user sees only their own data | step 1 built (login, logout, accounts by script, login screen, CLI login; tested); next: each user sees only their own data |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

@@ -9,6 +9,7 @@
 #   Your project folder is mounted into the container and uvicorn --reload restarts the server
 #   when a file in app/ or prompts/ changes, so code changes need no rebuild.
 #   Rebuild (`docker compose up -d --build`) only after changing requirements.txt or the Dockerfile.
+# - Both ports are bound to 127.0.0.1, so only this computer can reach them (there is no login).
 #
 # Start: docker compose up -d    Logs: docker compose logs -f api    Stop: docker compose down
 
@@ -22,7 +23,9 @@ services:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: interview
     ports:
-      - "5433:5432"  # host 5433, to avoid clashing with other local Postgres
+      # host 5433, to avoid clashing with other local Postgres. 127.0.0.1 = reachable from this
+      # machine only, not from other devices on your network (the password is just "app").
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -45,7 +48,8 @@ services:
              (python scripts/seed_question_bank.py || echo 'Question bank not seeded, starting anyway') &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-dir prompts"
     ports:
-      - "8000:8000"
+      # This machine only: the API has no login and serves your stored CV and documents.
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
     depends_on:

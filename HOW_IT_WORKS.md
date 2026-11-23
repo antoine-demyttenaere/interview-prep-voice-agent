@@ -129,6 +129,7 @@ alembic.ini            Alembic settings
 pytest.ini             pytest settings
 langgraph.json         Tells LangGraph Studio where the graph is (see section 13)
 .env.example           Template for .env (your keys; .env is never committed)
+README.md              The public overview: what the app does, the stack, how to run it
 plan.md                Goals, stack, phases
 CLAUDE.md              Rules for working on this repo (headers, this guide, commits)
 ```
@@ -146,7 +147,7 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0004). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0004). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the API has no login and serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.

@@ -14,6 +14,10 @@ The app runs in Docker Compose (Windows host, PowerShell). The project folder is
 - One test: `docker compose exec api pytest -q tests/test_graph_flow.py::test_end_endpoint`
 - New migration: `docker compose exec api alembic revision --autogenerate -m "add X"`, review the file, then `docker compose restart api`
 - Real Claude + LangSmith check: `docker compose exec api python scripts/smoke_claude.py`
+- Answer-scoring eval (real Claude, costs money, ~2 min): `./scripts/eval.ps1` (defaults to `--reps 2`). A quick pilot: `./scripts/eval.ps1 --reps 1 --ids strong-incident,no-answer-skip`. Add `--no-private` to skip the private cases. Run it after changing a prompt, rubric or model.
+- Typed interview in a terminal: `python scripts/interview_cli.py new|start|resume ...`, run on the host, not in the container (standard library only, talks to the API over HTTP; see HOW_IT_WORKS.md section 13)
+- After editing `question_bank/*.yaml`: `docker compose exec api python scripts/seed_question_bank.py` (syncs the table and embeds only new questions; it also runs on every container start)
+- Re-embed documents: `docker compose exec api python scripts/embed_documents.py` (only documents without chunks), add `--all` after changing the chunk size or embedding model
 - After editing `requirements.txt` or the Dockerfile: `docker compose up -d --build`. After editing `.env`: `docker compose up -d --force-recreate api`.
 
 There is no linter or formatter config. Postgres is on host port **5433** (`app` / `app`, database `interview`).
@@ -28,6 +32,7 @@ Tests need the `db` container running. They use fakes for Claude, Voyage, Deepgr
 - **All Claude calls go through [app/llm.py](app/llm.py)**: `structured()` returns Pydantic objects ([schemas.py](app/graph/schemas.py)), `text_reply()` returns plain text. Failures raise `LLMError`, which the API turns into a 502, and `/retry` re-runs the failed step. Haiku handles each turn and Sonnet handles the brief, the plan and the feedback (set in `.env` with `MODEL_TURN` and `MODEL_REASONING`).
 - **Prompts are files** in `prompts/`, re-read on every call and filled with `prompts.render(name, **values)` from `$placeholders`. A missing value raises an error. The header comment is stripped before the prompt is sent. `interviewer_system.md` (which includes the brief) is prompt-cached, so anything that changes per turn (retrieved `$context`, `$bank_questions`) must go in the user prompt, never in the system prompt.
 - **RAG** ([app/rag/](app/rag/)): parse (PDF, DOCX, .eml, text, web page) → chunk → embed with Voyage (`vector(1024)`) → pgvector cosine search, scoped by `interview_id`. A failed search logs a warning and the question is asked without passages, so the interview doesn't stop.
+- **Evals are separate from tests** ([evals/answer_scoring/](evals/answer_scoring/)): tests check that the code works with fakes, while evals check how good Claude's decisions are. `run.py` calls the real `evaluate_answer` node on the labelled cases in `cases.yaml` (plus `evals/private/answer_scoring.yaml`) and grades them in code (`score_in_range`, `off_by`, `follow_up_ok`). Claude errors count as `invalid`, never as wrong scores. Each run is a LangSmith experiment on a dataset whose name includes a hash of the cases, and a local summary goes to `runs/`, compared with the previous run. Token and cost tracking uses `app.llm.record_calls()`.
 - **Speech providers sit behind interfaces** ([app/voice/stt.py](app/voice/stt.py), [tts.py](app/voice/tts.py)), selected with `STT_PROVIDER` and `TTS_PROVIDER`. Every setting comes from [app/config.py](app/config.py) through `get_settings()`.
 
 # Project rules
@@ -92,7 +97,7 @@ Don't add a third font. The system font is only the fallback when the fonts can'
 
 ## Personal data
 
-Real documents (CV, job posts, recruiter emails) live in `my_docs/`, which git ignores. Never put them in `samples/` (committed, fictional only) and never commit them.
+Real documents (CV, job posts, recruiter emails) live in `my_docs/`, which git ignores. Never put them in `samples/` (committed, fictional only) and never commit them. The same goes for eval cases built from real sessions: they belong in `evals/private/` (git-ignored), never in `evals/answer_scoring/cases.yaml`, and the same applies to recordings in `evals/audio/`.
 
 ## HOW_IT_WORKS.md
 

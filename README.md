@@ -67,20 +67,14 @@ You need Docker Desktop and API keys for the services you want to use:
 ```powershell
 Copy-Item .env.example .env    # then fill in your keys in .env
 docker compose up -d           # applies migrations, seeds the question bank, starts the server
-docker compose exec api python scripts/create_user.py --email you@example.com --admin   # your account
+docker compose exec api python scripts/create_user.py --email you@example.com --admin   # your admin account
 ```
 
-Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) and log in. The API docs are at http://localhost:8000/docs.
+Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) and enter your email. There are no passwords: the app emails you a 6-digit code. Locally nothing is sent; the email is printed in `docker compose logs api`, where you read the code. Anyone can sign up the same way with their own email. The API docs are at http://localhost:8000/docs.
 
-To give someone access, make them an invite code. It works once, only for that email, for 14 days. They then use **Create an account** on the login screen:
+`scripts/manage_users.py` lists accounts, and can disable, enable or delete one.
 
-```powershell
-docker compose exec api python scripts/create_invite.py --email them@example.com --note "who it is for"
-```
-
-`scripts/manage_users.py` lists accounts and invites, and can disable, enable or delete an account, or reset its password.
-
-To try it without your own documents, use the fictional CV and job post in [samples/](samples/). To practise in a terminal by typing (it asks for your email and password):
+To try it without your own documents, use the fictional CV and job post in [samples/](samples/). To practise in a terminal by typing (the first time, it asks for your email and the code it receives):
 
 ```powershell
 python scripts/interview_cli.py new --company "Northwind Logistics" --role "Senior Backend Engineer" `
@@ -98,7 +92,7 @@ The tests check that the code works and make no API calls. The evals check how g
 
 ## Privacy
 
-The app is meant to run on your own machine, and both ports are bound to `127.0.0.1`. Every interview route needs a login: passwords are stored as Argon2 hashes, and the login cookie is HttpOnly and SameSite=Lax. Each user sees only their own interviews, documents and CV, and new accounts need an invite code made for their email. Logins and registrations are rate-limited, requests sent from other websites are refused, and anyone can delete their account and all its data. The registration form says which outside services receive what.
+The app is meant to run on your own machine, and both ports are bound to `127.0.0.1`. Every interview route needs a login. There are no passwords: you log in, and sign up the first time, with a 6-digit code sent to your email, stored only as an HMAC. The login cookie is HttpOnly and SameSite=Lax. Each user sees only their own interviews, documents and CV. Codes sent and wrong codes are rate-limited, requests sent from other websites are refused, and anyone can delete their account and all its data (confirmed by an emailed code). The login screen says which outside services receive what.
 
 - Your real documents go in `my_docs/`, eval cases built from your own answers go in `evals/private/`, and recordings go in `evals/audio/`. Git ignores all three.
 - Everything in `samples/` and `evals/answer_scoring/cases.yaml` is fictional.
@@ -110,7 +104,8 @@ The app is meant to run on your own machine, and both ports are bound to `127.0.
 | --- | --- |
 | 0-3: skeleton, typed interview with brief review, voice, document uploads and search, technical interview types | built |
 | 4: evals in LangSmith | in progress (answer-scoring eval done) |
-| 4.6: accounts with email, password and invite code | built |
+| 4.6: accounts, each user sees only their own data | built |
+| 4.7: sign up with an emailed code, 1 practice, 2 interviews, "Request more" | in progress (code login done) |
 | 4.5: cost control, per user | built |
 | 5: deployment on AWS with Terraform | planned |
 | 6: streaming, live turn detection, personas | planned |

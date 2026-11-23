@@ -12,8 +12,10 @@ pytest loads conftest.py automatically.
   current_user dependency (app/auth/deps.py) with that user (autouse fixture `logged_in`), so
   the interview tests don't have to log in. A test that takes the `real_auth` fixture turns this
   off and goes through the real cookie check (tests/test_auth.py).
-- No leftover attempts: auth_attempts (the login and registration limits) is emptied before
-  each test, so failures from one test or one earlier run never lock out the next.
+- No leftover attempts: auth_attempts (the limits on codes sent and wrong codes) is emptied
+  before each test, so attempts from one test or one earlier run never lock out the next.
+- No real email: FakeMailer replaces app/mail in EVERY test (autouse fixture `mailbox`) and keeps
+  each email in a list; mailbox.code_for(email) reads the latest 6-digit code sent there.
 - Generous cost limits: the usage table is emptied before each test and the budgets and the
   "interviews per day" limit are set very high (fixture `generous_limits`), since the test
   account starts many interviews. A test that checks a limit lowers it with monkeypatch
@@ -39,7 +41,6 @@ from sqlalchemy import delete, select  # noqa: E402
 from sqlalchemy.orm import Session as DB  # noqa: E402
 
 from app.auth.deps import current_user  # noqa: E402
-from app.auth.passwords import hash_password  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.models import AuthAttempt, Usage, User  # noqa: E402
 from app.db.session import get_engine  # noqa: E402
@@ -68,19 +69,43 @@ def test_database():
 
 
 TEST_EMAIL = "tests@example.com"
-TEST_PASSWORD = "correct horse battery"
 
 
 @pytest.fixture(scope="session")
 def test_user(test_database) -> User:
-    """The account the tests run as (created once; same password every run)."""
+    """The account the tests run as (created once, reused by every run)."""
     with DB(get_engine(), expire_on_commit=False) as db:
         user = db.scalar(select(User).where(User.email == TEST_EMAIL))
         if not user:
-            user = User(email=TEST_EMAIL, password_hash=hash_password(TEST_PASSWORD))
+            user = User(email=TEST_EMAIL)
             db.add(user)
             db.commit()
         return user
+
+
+class FakeMailer:
+    """Stands in for app/mail: keeps every email instead of sending it."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    def send(self, to, subject, text):
+        self.sent.append({"to": to, "subject": subject, "text": text})
+
+    def code_for(self, email: str) -> str:
+        """The latest 6-digit code emailed to this address."""
+        mails = [m for m in self.sent if m["to"] == email.strip().lower()]
+        assert mails, f"no email was sent to {email}"
+        return re.search(r"\b(\d{6})\b", mails[-1]["text"]).group(1)
+
+
+@pytest.fixture(autouse=True)
+def mailbox(monkeypatch):
+    from app.auth import routes as auth_routes
+
+    box = FakeMailer()
+    monkeypatch.setattr(auth_routes, "get_mailer", lambda: box)
+    return box
 
 
 @pytest.fixture(autouse=True)

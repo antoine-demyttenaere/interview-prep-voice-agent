@@ -4,16 +4,14 @@ index.html - the one web page of the app: set up an interview, review the brief,
 Served by the FastAPI server at http://localhost:8000/ (app/main.py mounts the web/ folder).
 The page only shows things and sends requests to the API; app.js holds the logic and
 style.css the look. There are five panels, and app.js shows one at a time:
-  0. login     - email and password; shown first when you aren't logged in, and whenever the
-                 API answers 401 (your login ended). "Create an account" switches to the
-                 registration form: email, password and the invite code you were given
-                 (scripts/create_invite.py), with a short note on where your data goes.
-                 http://localhost:8000/#register opens it directly
+  0. login     - your email, then the 6-digit code it receives (no passwords; a new email
+                 creates the account), with a short note on where your data goes. Shown first
+                 when you aren't logged in, and whenever the API answers 401 (your login ended)
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
                  "Your CV" shows the stored CV with a Delete button; a folded box continues a session;
-                 another, "Your account", changes your password or deletes your account
+                 another, "Your account", deletes your account (confirmed by an emailed code)
   2. brief     - the Interview Brief as six cards shown one at a time (round arrows, or the
                  keyboard arrows); "Approve" unlocks once you reach the last card; the "Something
                  to change?" box is always open; or go back to the documents
@@ -63,34 +61,13 @@ No build step and no framework: edit a file, reload the page.
     <p id="error" class="error" hidden></p>
     <p id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">Working...</span></p>
 
-    <!-- 0. Log in (app.js shows it first when GET /auth/me answers 401) -->
+    <!-- 0. Log in or sign up with a code sent by email (app.js shows it when GET /auth/me answers 401) -->
     <section id="panel-login" hidden>
       <form id="login-form" class="panel auth-card">
-        <h2>Log in</h2>
-        <p class="hint">Practise your next interview with your own documents.</p>
+        <h2>Practise your next interview</h2>
+        <p class="hint">With your own job post, notes and CV. Enter your email: we send you a 6-digit code, no password needed. New here? The same code creates your account.</p>
         <label>Email
-          <input id="login-email" name="email" type="email" autocomplete="username" required>
-        </label>
-        <label>Password
-          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
-        </label>
-        <button type="submit" class="btn btn-primary btn-large">Log in</button>
-        <p class="hint auth-note">Got an invite code? <a href="#register" id="to-register">Create an account</a></p>
-      </form>
-
-      <form id="register-form" class="panel auth-card" hidden>
-        <h2>Create an account</h2>
-        <p class="hint">Accounts are by invitation. Use the email address your invite code was made for.</p>
-        <label>Email
-          <input name="email" type="email" autocomplete="username" required>
-        </label>
-        <label>Password
-          <span class="hint">At least 10 characters.</span>
-          <input name="password" type="password" autocomplete="new-password" minlength="10" required>
-        </label>
-        <label>Invite code
-          <span class="hint">Like K7QM-2XPA-9RTD. Capitals and dashes don't matter.</span>
-          <input name="code" type="text" autocomplete="off" spellcheck="false" required>
+          <input id="login-email" name="email" type="email" autocomplete="email" required>
         </label>
         <p class="privacy-note">
           <strong>Where your data goes.</strong> Your documents, answers and feedback are stored on this
@@ -99,8 +76,18 @@ No build step and no framework: edit a file, reload the page.
           operator's LangSmith traces for debugging. "Delete my account" removes everything from this
           server; copies already sent to those services follow their own retention rules.
         </p>
-        <button type="submit" class="btn btn-primary btn-large">Create my account</button>
-        <p class="hint auth-note">Already have an account? <a href="#login" id="to-login">Log in</a></p>
+        <button type="submit" class="btn btn-primary btn-large">Send me a code</button>
+      </form>
+
+      <form id="code-form" class="panel auth-card" hidden>
+        <h2>Check your email</h2>
+        <p class="hint">We sent a 6-digit code to <strong id="code-email"></strong>. It works once, for 10 minutes. Not there? Look in your spam folder.</p>
+        <label>Code
+          <input id="login-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 pattern="[0-9 ]{6,7}" maxlength="7" required>
+        </label>
+        <button type="submit" class="btn btn-primary btn-large">Log in</button>
+        <p class="hint auth-note"><a href="#" id="resend-code">Send a new code</a> · <a href="#" id="other-email">Use another email</a></p>
       </form>
     </section>
 
@@ -234,23 +221,15 @@ No build step and no framework: edit a file, reload the page.
         </div>
       </details>
 
-      <!-- Your account: change the password, or delete the account and all its data -->
+      <!-- Your account: delete it and all its data, confirmed by a code sent to your email -->
       <details class="resume panel" id="account-box">
         <summary>Your account</summary>
-        <form id="password-form" class="account-form">
-          <h3>Change your password</h3>
-          <div class="inline">
-            <input name="current" type="password" autocomplete="current-password" placeholder="Current password" required>
-            <input name="new" type="password" autocomplete="new-password" minlength="10" placeholder="New password (10+ characters)" required>
-            <button type="submit" class="btn btn-ghost">Change</button>
-          </div>
-          <p class="hint">Your other logins (other browsers, the terminal) end; this one stays.</p>
-        </form>
         <form id="delete-account-form" class="account-form">
           <h3>Delete my account</h3>
-          <p class="hint">Deletes your account and everything in it: interviews, documents, CV, sessions, answers and feedback. It can't be undone.</p>
+          <p class="hint">Deletes your account and everything in it: interviews, documents, CV, sessions, answers and feedback. It can't be undone. To confirm, we email you a code.</p>
           <div class="inline">
-            <input name="password" type="password" autocomplete="current-password" placeholder="Your password" required>
+            <button id="delete-send-code" type="button" class="btn btn-ghost">Email me a code</button>
+            <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Code from the email" required>
             <button type="submit" class="btn btn-danger">Delete my account</button>
           </div>
         </form>

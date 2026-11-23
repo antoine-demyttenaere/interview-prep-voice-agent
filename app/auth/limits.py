@@ -1,20 +1,22 @@
-"""Guessing limits: slow down anyone trying many passwords or invite codes.
+"""Guessing limits: slow down anyone trying many login codes, or flooding inboxes with codes.
 
-Used by POST /auth/login and POST /auth/register (app/auth/routes.py). Attempts are rows in the
-auth_attempts table (migration 0008); the limits are settings (app/config.py, .env):
+Used by POST /auth/start (send a code) and POST /auth/verify (check it) in app/auth/routes.py.
+Attempts are rows in the auth_attempts table (migration 0008); the limits are settings
+(app/config.py, .env), all over a window of LOGIN_WINDOW_MINUTES (15):
 
-- Login: after LOGIN_MAX_FAILURES (5) wrong passwords for one email in LOGIN_WINDOW_MINUTES
-  (15), that email is locked until the oldest failure is out of the window, even with the right
-  password. A successful login clears the email's failures. Separately, one IP address gets at
-  most LOGIN_MAX_FAILURES_PER_IP (20) failures in the window, so nobody can try 5 passwords on
-  every email.
-- Registration: at most REGISTER_MAX_PER_HOUR (10) attempts per IP address per hour.
+- Codes sent: at most CODES_PER_EMAIL (3) per email and CODES_PER_IP (10) per IP address. This
+  stops someone filling another person's inbox, and caps what sign-ups can cost in email.
+- Wrong codes: after LOGIN_MAX_FAILURES (5) wrong codes for one email, that email is locked
+  until the oldest failure is out of the window, even with the right code. A successful login
+  clears the email's failures. One IP address also gets at most LOGIN_MAX_FAILURES_PER_IP (20)
+  wrong codes, so nobody can try codes on many emails at once. (Each code also stops working
+  after CODE_MAX_TRIES wrong tries: app/auth/codes.py.)
 
 A blocked attempt gets HTTP 429 ("Too Many Requests") with how long to wait. It is checked
-before the password, so the answer doesn't depend on whether the guess was right.
+before the code, so the answer doesn't depend on whether the guess was right. The counts live in
+Postgres (not in the server's memory) so they hold with several servers, as on AWS.
 
-The trade-off: someone who knows your email can lock it for 15 minutes by typing wrong
-passwords. That is the usual price of a per-email limit, and much better than letting them guess.
+The trade-off: someone who knows your email can lock it for 15 minutes by typing wrong codes.
 
 The IP address is the one the server sees (request.client.host). Behind a load balancer (AWS,
 Phase 5), uvicorn must be told to trust its X-Forwarded-For header, or every caller would share
@@ -37,7 +39,12 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _check(db: DB, kind: str, column, value: str, limit: int, window: timedelta) -> None:
+def _window() -> timedelta:
+    return timedelta(minutes=get_settings().login_window_minutes)
+
+
+def _check(db: DB, kind: str, column, value: str, limit: int) -> None:
+    window = _window()
     since = datetime.now(timezone.utc) - window
     count, oldest = db.execute(
         select(func.count(), func.min(AuthAttempt.created_at))
@@ -55,17 +62,18 @@ def record(db: DB, kind: str, ip: str, email: str | None = None) -> None:
     db.commit()
 
 
+def check_code_request(db: DB, email: str, ip: str) -> None:
+    s = get_settings()
+    _check(db, "code_sent", AuthAttempt.email, email, s.codes_per_email)
+    _check(db, "code_sent", AuthAttempt.ip, ip, s.codes_per_ip)
+
+
 def check_login(db: DB, email: str, ip: str) -> None:
     s = get_settings()
-    window = timedelta(minutes=s.login_window_minutes)
-    _check(db, "login_failed", AuthAttempt.email, email, s.login_max_failures, window)
-    _check(db, "login_failed", AuthAttempt.ip, ip, s.login_max_failures_per_ip, window)
+    _check(db, "login_failed", AuthAttempt.email, email, s.login_max_failures)
+    _check(db, "login_failed", AuthAttempt.ip, ip, s.login_max_failures_per_ip)
 
 
 def clear_login_failures(db: DB, email: str) -> None:
     """After a successful login: that email starts again from zero (the caller commits)."""
     db.execute(delete(AuthAttempt).where(AuthAttempt.kind == "login_failed", AuthAttempt.email == email))
-
-
-def check_register(db: DB, ip: str) -> None:
-    _check(db, "register", AuthAttempt.ip, ip, get_settings().register_max_per_hour, timedelta(hours=1))

@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session as DB
 from app import llm
 from app.api import interviews as interviews_api
 from app.auth.deps import current_user
-from app.auth.passwords import hash_password
 from app.config import get_settings
 from app.costs import pricing, usage
 from app.db.models import Usage, User
@@ -43,7 +42,7 @@ from test_voice_turn import _record, _session_waiting_for_answer, speech  # noqa
 
 def _user(**extra) -> User:
     with DB(get_engine(), expire_on_commit=False) as db:
-        user = User(email=f"c-{uuid.uuid4().hex[:8]}@example.com", password_hash=hash_password("x" * 12), **extra)
+        user = User(email=f"c-{uuid.uuid4().hex[:8]}@example.com", **extra)
         db.add(user)
         db.commit()
         return user

@@ -16,15 +16,16 @@ show what the session is waiting for (the brief or a question), read your input,
 
 API_URL (default http://localhost:8000) selects the server.
 
-Logging in: every command first logs in (POST /auth/login) with INTERVIEW_EMAIL and
-INTERVIEW_PASSWORD if they are set, otherwise it asks (the password isn't shown as you type).
-The server answers with a login cookie; this script keeps it in memory and sends it back with
-every request (the `Cookie` header), like a browser does. Create an account first with
-`docker compose exec api python scripts/create_user.py --email you@example.com`.
+Logging in: there are no passwords. The first time, the script asks for your email (or reads
+INTERVIEW_EMAIL), the server emails you a 6-digit code (locally it is printed in
+`docker compose logs api`), and you type it here. The server answers with a login cookie,
+which the script sends back with every request (the `Cookie` header), like a browser does, and
+saves in ~/.interview_cli_login (your home folder, not the project), so the next runs don't
+ask again until it expires (30 days) or you log out on the server. Delete that file to log out.
+A new email also creates the account, as on the web page.
 """
 
 import argparse
-import getpass
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ from pathlib import Path
 API = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
 EDIT_FILE = Path("brief_edit.json")
 COOKIE = {}  # {"Cookie": "login=..."} once logged in; added to every request
+LOGIN_FILE = Path.home() / ".interview_cli_login"  # the saved cookie, private to your account
 
 
 class ApiError(Exception):
@@ -62,24 +64,43 @@ def call(method: str, path: str, body: dict | None = None) -> dict:
         sys.exit(f"Cannot reach the API at {API} ({exc.reason}). Is `docker compose up` running?")
 
 
-def login() -> None:
-    """Log in and keep the login cookie for the next requests."""
-    email = os.getenv("INTERVIEW_EMAIL") or input("Email: ")
-    password = os.getenv("INTERVIEW_PASSWORD") or getpass.getpass("Password: ")
-    body = json.dumps({"email": email, "password": password}).encode()
-    req = urllib.request.Request(API + "/auth/login", data=body, method="POST",
+def _post_json(path: str, body: dict):
+    req = urllib.request.Request(API + path, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            for header in resp.headers.get_all("Set-Cookie") or []:
-                if header.startswith("login="):
-                    COOKIE["Cookie"] = header.split(";", 1)[0]  # "login=<token>", without its options
+        return urllib.request.urlopen(req, timeout=30)
     except urllib.error.HTTPError as exc:
         sys.exit(f"Login failed: {json.loads(exc.read()).get('detail', exc.reason)}")
     except urllib.error.URLError as exc:
         sys.exit(f"Cannot reach the API at {API} ({exc.reason}). Is `docker compose up` running?")
+
+
+def login() -> None:
+    """Reuse the saved login if it still works; otherwise log in with a code sent by email."""
+    if LOGIN_FILE.exists():
+        COOKIE["Cookie"] = LOGIN_FILE.read_text(encoding="utf-8").strip()
+        try:
+            me = call("GET", "/auth/me")
+            print(f"Logged in as {me['email']}.")
+            return
+        except ApiError:
+            COOKIE.clear()  # expired or logged out: ask for a new code
+
+    email = os.getenv("INTERVIEW_EMAIL") or input("Email: ")
+    print(json.loads(_post_json("/auth/start", {"email": email}).read())["detail"])
+    code = input("Code from the email: ")
+    with _post_json("/auth/verify", {"email": email, "code": code}) as resp:
+        for header in resp.headers.get_all("Set-Cookie") or []:
+            if header.startswith("login="):
+                COOKIE["Cookie"] = header.split(";", 1)[0]  # "login=<token>", without its options
     if not COOKIE:
         sys.exit("Login failed: the server sent no login cookie.")
+    LOGIN_FILE.write_text(COOKIE["Cookie"], encoding="utf-8")
+    try:
+        LOGIN_FILE.chmod(0o600)  # readable by you only (ignored on Windows, where home folders are private)
+    except OSError:
+        pass
+    print(f"Logged in as {email.strip().lower()}.")
 
 
 def upload(path: str, fields: dict) -> dict:

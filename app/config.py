@@ -53,12 +53,22 @@ class Settings(BaseSettings):
     # it only over HTTPS. Keep cookie_secure false on http://localhost, set it true on AWS.
     login_days: int = 30
     cookie_secure: bool = False
-    # Guessing limits (app/auth/limits.py): failed logins per email and per IP address in a
-    # window, and registration attempts per IP address per hour.
+    # Login codes (Phase 4.7, app/auth/codes.py). secret_key signs the stored codes (HMAC): set
+    # it in .env to a long random value; without it a random one is made at each start, so codes
+    # sent before a restart stop working.
+    secret_key: str = ""
+    code_minutes: int = 10  # how long a code stays valid
+    code_max_tries: int = 5  # wrong tries before a code stops working
+    # Guessing limits (app/auth/limits.py), in a window of login_window_minutes: codes sent per
+    # email and per IP address, and wrong codes per email and per IP address.
+    login_window_minutes: int = 15
+    codes_per_email: int = 3
+    codes_per_ip: int = 10
     login_max_failures: int = 5
     login_max_failures_per_ip: int = 20
-    login_window_minutes: int = 15
-    register_max_per_hour: int = 10
+    # Email (app/mail/): "console" prints each email in the server logs (local use).
+    mail_provider: str = "console"
+    mail_from: str = "Interview Practice <no-reply@localhost>"
 
     # Cost control (Phase 4.5, app/costs/budget.py). Budgets in US dollars for all users
     # together; at budget_warn_ratio (80%) the page warns the admin, at 100% new interviews

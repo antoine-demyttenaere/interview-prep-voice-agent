@@ -1,6 +1,6 @@
 # Interview Prep Voice Agent — Plan
 
-Source of truth: the Claude Docs version of this plan. This file is a Markdown copy for Claude Code and other surfaces (as of 2026-11-23).
+Source of truth: the Claude Docs version of this plan. This file is a Markdown copy for Claude Code and other surfaces (as of 2026-11-24).
 
 ## Goal and principles
 
@@ -43,6 +43,7 @@ Claude does the reasoning. The speech, voice and embedding providers each sit be
 | Local run | Docker Compose | Decided | `api` + `db` (pgvector image) |
 | Cloud | AWS: ECS Fargate, RDS, S3, ECR, ALB, Secrets Manager | Decided | |
 | Infrastructure as code | Terraform | Decided | State in S3 |
+| Email (login codes, Phase 4.7) | "console" provider locally (the code is printed in the server logs); Amazon SES on AWS | Decided | Behind an interface like speech; SES fits the AWS stack, about $0.10 per 1,000 emails |
 | Local machine | Windows, PowerShell, Docker Desktop | Given | Scripts in PowerShell |
 
 ## Architecture
@@ -93,14 +94,16 @@ All four modes share this graph; they differ only in prompts, rubrics and questi
 
 | Table | Holds | Key columns |
 | --- | --- | --- |
-| `users` | One account (Phase 4.6) | email (unique, lowercased), `password_hash` (Argon2), is_admin, disabled_at |
-| `invites` | Invite codes I hand out (Phase 4.6) | `code_hash` (never the code itself), `email` (the only address it works for), note, expires_at, `used_at`, `used_by` (one use) |
+| `users` | One account (Phase 4.6; 4.7 drops `password_hash` and adds quotas) | email (unique, lowercased), is_admin, disabled_at, `email_verified_at`, `practice_quota` (1), `interview_quota` (2) |
+| `email_codes` | Login codes sent by email (Phase 4.7) | email, `code_hash` (HMAC, never the code), purpose (login / delete_account), expires_at (10 min), attempts, used_at |
+| `access_requests` | "Request more" (Phase 4.7) | `user_id`, message, created_at, handled_at, granted (practices / interviews added) |
+| `invites` | Invite codes (Phase 4.6; **removed in 4.7**) | `code_hash`, `email`, note, expires_at, `used_at`, `used_by` |
 | `login_sessions` | Who is logged in (Phase 4.6) | `user_id`, `token_hash`, expires_at, last_seen_at; deleting the row logs out |
 | `interviews` | One upcoming interview | `user_id`, company, role, date, interviewers, mode, `brief` (JSON), brief status |
 | `documents` | Uploaded files and pasted texts | `user_id`, `interview_id` (null for the CV), doc_type, source, S3 key / raw text |
 | `chunks` | Searchable pieces of documents | `document_id`, `user_id` and `interview_id` (copied from the document), text, `embedding vector(1024)`, metadata |
 | `question_bank` | Seeded questions for technical and system design | mode, topic, difficulty, text, embedding |
-| `sessions` | One practice run | `interview_id`, LangGraph `thread_id`, started / ended |
+| `sessions` | One practice run | `interview_id`, LangGraph `thread_id`, started / ended, `kind` (practice / interview, Phase 4.7) |
 | `turns` | Each question and answer | `session_id`, question, transcript, score, LangSmith `run_id` |
 | `feedback` | Final report and my rating of it | `session_id`, rubric scores, strengths, fixes, thumbs up / down |
 | `usage` | Each paid API call (Phase 4.5) | provider, model, units, cost_usd, `user_id`, session_id, created_at |
@@ -130,6 +133,36 @@ Before the public URL, people can only use the app with an account, and they can
 | Leaving | "Delete my account" removes interviews, documents, chunks, sessions and their LangGraph checkpoints (by `thread_id`, as they have no foreign key) | Their personal data must be removable |
 
 **Existing data:** one migration (0006) adds the `user_id` columns as optional, gives every existing row to the oldest admin account (or the oldest account), then makes `user_id` required. With data but no account, it stops and says to create the account first (`docker compose run --rm api python scripts/create_user.py ... --admin`).
+
+### From Phase 4.7: sign up with an email code, one practice, then interviews
+
+Phase 4.7 replaces invite-only registration and passwords. Anyone can start, with a verified email, and quotas decide what they can use (decided 2026-11-24: no invites, code-only login, no automatic reset; one practice with the person's own documents instead of a fixed demo).
+
+```
+Email  ->  6-digit code by email  ->  logged in (account created the first time)
+       ->  1 practice (own documents, short)  ->  2 interviews  ->  "Request more"  ->  I grant more
+```
+
+1. **Log in (and sign up) by code:** the person types an email; the app emails a 6-digit code; typing it back creates the account if needed and logs in (same cookie as today, 30 days). There are no passwords at all: nothing to store, leak, reuse or reset. Verifying the email matters because without it anyone could type `a1@x.com`, `a2@x.com`... and get unlimited free practices on my API keys.
+2. **The practice:** 1 per account. The person sets up an interview as usual, with their own documents (job post, notes, CV), reviews the brief, and the practice is a **shorter session**: 3 questions, with voice, and short feedback written by Haiku instead of Sonnet. The brief is still written by Sonnet, since it is what makes the questions personal. About $0.25-0.30. Its first session on an account is the practice automatically (labelled "Practice" on the page); the documents and the approved brief stay, so the interviews that follow can reuse them without uploading again.
+3. **Interviews:** 2 per account, the full session (5 questions by default, Sonnet feedback, about $0.50 each).
+4. **Request more:** when a quota is used up, the page offers "Request more" (with an optional message). I see requests with `manage_users.py requests` and grant with `manage_users.py grant EMAIL --interviews 2`; the person gets an email. Quotas never reset by themselves.
+5. **Admins** have no quota. The daily limit (4 interviews a day) and the budgets still apply to everyone.
+
+**What goes away** (built in 4.6): passwords (Argon2, `argon2-cffi`), invite codes (`invites` table, `create_invite.py`, `/auth/register`, the registration form), change password and `reset-password`. **What stays:** the login cookie, per-user data and the 404 ownership checks, the Origin check, the admin script, "Delete my account" (now confirmed with a fresh emailed code instead of the password), and the guessing limits (now on codes).
+
+**Security choices:**
+
+| Topic | Choice | Why |
+| --- | --- | --- |
+| The code | 6 random digits, valid 10 minutes, at most 5 tries, one use; a new code replaces the previous one | 5 guesses out of 1,000,000 per code |
+| Storing it | HMAC-SHA-256 with a server secret (`SECRET_KEY` in `.env`), never the code | A plain hash of 6 digits could be reversed in a second by trying them all; with the secret, a leaked table is useless |
+| Asking for codes | At most 3 codes per email per 15 minutes and 10 per IP address; counts in `auth_attempts` | Stops flooding someone's inbox and spending on email |
+| The answer to "send me a code" | Always "check your inbox", even for a disabled account (which gets no email) | Says nothing about who has an account |
+| Bots (public URL, Phase 5) | Cloudflare Turnstile, a free check, before a code is sent | Scripts can't create accounts in bulk |
+| Disposable inboxes | Not blocked at first; the trial budget caps what they can cost | Keep it simple until it's a real problem |
+| Practices' cost | Their own budget, e.g. $3 a month and $0.75 a day (`BUDGET_PRACTICE_*`), inside the global one | New sign-ups trying the app can't use up the interviews' budget (about 10 practices a month) |
+| Personal data at sign-up | Uploads happen only after the email is verified, so every document belongs to an account its owner can delete; the "where your data goes" note is on the first screen | People try it with their real CV from the first session |
 
 ## Cost control
 
@@ -173,6 +206,8 @@ All paid APIs together stay under **$10 a month** (AWS hosting is budgeted separ
 | Eval run (Phase 4) | $1 per run, counted in the monthly budget | a full eval run calls Claude many times |
 
 **Several users:** invited users spend on my API keys, so the limits above apply per user (each user has their own daily limits), while the monthly and daily budgets stay global caps for everyone together.
+
+**The practice (Phase 4.7)** has its own budget inside the global one (about $3 a month, $0.75 a day). It is shorter than an interview (3 questions) and uses Haiku for its feedback, so it costs about $0.25-0.30, most of it the Sonnet brief and the voice.
 
 **How it is enforced:** a `usage` table records every paid call: provider, model, units (tokens, audio seconds, characters), cost in dollars and the user. Prices are kept in `pricing.yaml`, so a price change is a one-line edit. A guard checks the budgets before each session starts and before each paid call. The web page shows the month's spend. Every limit is set in `.env` (e.g. `BUDGET_MONTHLY_USD`). LangSmith's cost per trace is a cross-check for Claude.
 
@@ -244,10 +279,21 @@ Details in [Accounts and access](#accounts-and-access). Each step ends with its 
 
 **Check:** someone I invite registers with their code, runs an interview, and can't see anything of mine; I can't see theirs through the web page either.
 
+### Phase 4.7: Open sign-up by email code, one practice, quotas (before the public URL)
+
+Details in [From Phase 4.7](#from-phase-47-sign-up-with-an-email-code-one-practice-then-interviews). Each step ends with its own check.
+
+- [x] **Code login and sign-up:** an email interface with a "console" provider (code printed in the logs; the Amazon SES provider is added in Phase 5, where it can be tested with a verified domain); `email_codes` table; `POST /auth/start` (send a code) and `POST /auth/verify` (check it, create the account if needed, log in); the first screen becomes email, then code; limits on code requests and tries; "Delete my account" confirmed by a code; the CLI logs in with a code; `create_user.py` without a password. Removes passwords, invite codes, `/auth/register`, the registration form, change password and `reset-password` (a migration drops `users.password_hash` and the `invites` table). Check: a new email gets a code in the logs and lands logged in on an empty account; a wrong code 5 times is refused; an old code no longer works.
+- [ ] **The practice, quotas and requests:** `practice_quota` (1) / `interview_quota` (2) on users, `sessions.kind`; while a practice is left, a session is a practice (3 questions, Haiku feedback, labelled on the page); a session counts once its questions are planned, as today; the practice budget; the remaining counts in `GET /usage` and in the header ("Practice", then "2 interviews left"); "Request more" (`access_requests`), `manage_users.py requests` and `grant` (with an email to the person). Check: a new account's first session has 3 questions and Haiku feedback, costs under $0.35, and its documents are reused by the next session; the fourth session is refused with "Request more"; after `grant` it works, and the person gets the email.
+- [ ] Tests for each step; HOW_IT_WORKS.md, README and CLAUDE.md updated.
+
+**Check:** a new person signs up with their email, does 1 practice and 2 interviews with their own documents, is offered "Request more", and gets more after I grant them.
+
 ### Phase 5: AWS with Terraform
 - [ ] Terraform modules: network, ECR, ECS Fargate, RDS Postgres (pgvector), S3 for uploads, ALB with HTTPS, Secrets Manager
 - [ ] Terraform state in S3; deploys through GitHub Actions
 - [ ] Accounts from Phase 4.6 behind HTTPS (`COOKIE_SECURE=true`); uvicorn `--proxy-headers --forwarded-allow-ips` set to the load balancer, so the guessing limits see each caller's IP instead of the balancer's; Cognito only if the built-in accounts stop being enough
+- [ ] Email through Amazon SES: the SES provider in `app/mail` (with `boto3`), domain verified, out of the SES sandbox; `SECRET_KEY` in Secrets Manager and Cloudflare Turnstile before a login code is sent (Phase 4.7)
 - [ ] Cheaper fallback: one EC2 instance running the same Compose file behind Caddy
 
 **Check:** a voice interview works on the public HTTPS URL (the mic requires HTTPS outside localhost).
@@ -265,7 +311,8 @@ Details in [Accounts and access](#accounts-and-access). Each step ends with its 
 ```
 app/
   api/          # FastAPI routes
-  auth/         # passwords, login cookie, current_user, /auth routes (Phase 4.6)
+  auth/         # login codes, login cookie, current_user, /auth routes (Phase 4.6, 4.7)
+  mail/         # email interface: console (local), Amazon SES (AWS) (Phase 4.7)
   graph/        # state.py, nodes.py, build.py
   voice/        # stt.py, tts.py (interfaces + Deepgram / ElevenLabs implementations)
   rag/          # parsers, ingest.py, retrieve.py
@@ -314,4 +361,5 @@ The proposal is Deepgram + ElevenLabs. No public per-vendor usage figures exist,
 - [x] Invite codes: one code per person or a shared code? **One code per person** (decided 2026-11-23)
 - [x] Should a code only work for the email I made it for? **Yes, each code is locked to one email** (decided 2026-11-23)
 - [ ] Other users' data in my LangSmith traces: hide their inputs and outputs, or tell them at registration? (The registration form now tells them; hiding is still possible later.)
+- [x] Open access: **sign up with an email code**, 1 practice with their own documents (shorter session), then 2 interviews, then "Request more"; no invite codes, no passwords, no automatic reset (decided 2026-11-24)
 - [ ] ElevenLabs plan: the free tier (about 5 interviews a month) or a paid plan? A subscription would use a large share of the $10 budget.

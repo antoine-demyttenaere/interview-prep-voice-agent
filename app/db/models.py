@@ -13,13 +13,14 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 - QuestionBankItem: a seeded technical / system design question, with its embedding.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
   in LangGraph's checkpoint tables, under the session's thread_id.
-- User: one account (email + password hash). LoginSession: one logged-in browser or CLI run; its
-  token lives in a cookie and only a hash of it is stored here (app/auth/ uses both).
-  Not to be confused with Session above, which is a practice run.
-- Invite: a one-use code for one email address (scripts/create_invite.py); registering with it
-  creates the account (POST /auth/register). Only a hash of the code is stored.
-- AuthAttempt: one failed login or one registration attempt, counted by app/auth/limits.py to
-  slow down password guessing.
+- User: one account, known by its email (there are no passwords: you log in with a code sent by
+  email). LoginSession: one logged-in browser or CLI run; its token lives in a cookie and only a
+  hash of it is stored here (app/auth/ uses both). Not to be confused with Session above, which
+  is a practice run.
+- EmailCode: one 6-digit code sent by email to log in (or to confirm deleting an account); only
+  its HMAC is stored (app/auth/codes.py).
+- AuthAttempt: one code sent or one wrong code, counted by app/auth/limits.py to slow down
+  guessing and inbox flooding.
 - Usage: one paid API call (Claude, Deepgram, ElevenLabs, Voyage) with what it used and cost,
   written by app/costs/usage.py and added up by app/costs/budget.py.
 - QuestionAudio: the spoken audio of one question in one session, so a replay costs nothing.
@@ -143,7 +144,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(200))  # Argon2, never the password itself
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # first code login
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # set = can't log in
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -167,23 +168,23 @@ class LoginSession(Base):
     user: Mapped[User] = relationship()
 
 
-class Invite(Base):
-    """A one-use invite code, valid for one email until expires_at. code_hash is its SHA-256."""
+class EmailCode(Base):
+    """A login code sent by email. Valid until expires_at, for at most code_max_tries tries, once."""
 
-    __tablename__ = "invites"
+    __tablename__ = "email_codes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
     email: Mapped[str] = mapped_column(String(320), index=True)  # lowercased
-    note: Mapped[str] = mapped_column(String(200), default="")  # e.g. who it is for
+    purpose: Mapped[str] = mapped_column(String(20))  # login | delete_account
+    code_hash: Mapped[str] = mapped_column(String(64))  # HMAC-SHA-256 with SECRET_KEY
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    used_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # set = can't be used again
 
 
 class AuthAttempt(Base):
-    """A failed login (kind "login_failed") or a registration attempt (kind "register")."""
+    """A code sent (kind "code_sent") or a wrong code (kind "login_failed")."""
 
     __tablename__ = "auth_attempts"
 

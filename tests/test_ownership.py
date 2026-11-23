@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as DB
 
 from app.auth.deps import current_user
-from app.auth.passwords import hash_password
 from app.db.models import User
 from app.db.session import get_engine
 from app.main import app
@@ -35,7 +34,7 @@ def act_as(user: User) -> None:
 @pytest.fixture
 def user_b() -> User:
     with DB(get_engine(), expire_on_commit=False) as db:
-        user = User(email=f"b-{uuid.uuid4().hex[:8]}@example.com", password_hash=hash_password("b password long"))
+        user = User(email=f"b-{uuid.uuid4().hex[:8]}@example.com")
         db.add(user)
         db.commit()
         return user

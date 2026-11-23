@@ -1,19 +1,18 @@
-"""Creates an account from the command line (your own admin account, or a test account).
+"""Creates an account from the command line: mainly your own admin account.
 
-It asks for the password twice without showing it, hashes it with Argon2
-(app/auth/passwords.py) and adds a row to the users table (app/db/models.py). Use it to create
-your first account: the web page and the CLI need a login, and registration with an invite code
-only comes in Phase 4.6 step 3.
+Anyone can sign up on the web page with their email (Phase 4.7), but an admin account can only
+be made here. There is no password: you log in like everyone else, with a code sent by email
+(locally, the code is printed in `docker compose logs api`). It adds a row to the users table
+(app/db/models.py).
 
     docker compose exec api python scripts/create_user.py --email you@example.com --admin
-    docker compose exec api python scripts/create_user.py --email test@example.com
+    docker compose run --rm api python scripts/create_user.py --email you@example.com --admin
+        (the second form works even while the server can't start, e.g. before your first account)
 
-For a non-interactive run (a script, CI), set NEW_USER_PASSWORD instead of typing it.
-The email is stored lowercased. If the account already exists, nothing changes.
+The email is stored lowercased. If the account already exists, --admin makes it an admin.
 """
 
 import argparse
-import getpass
 import os
 import sys
 
@@ -22,41 +21,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import Session as DB  # noqa: E402
 
-from app.auth.passwords import hash_password, password_problem  # noqa: E402
-from app.auth.routes import normalize_email  # noqa: E402
+from app.auth.routes import EMAIL_SHAPE, normalize_email  # noqa: E402
 from app.db.models import User  # noqa: E402
 from app.db.session import get_engine  # noqa: E402
 
 
-def ask_password() -> str:
-    password = os.environ.get("NEW_USER_PASSWORD")
-    if password is None:
-        password = getpass.getpass("Password: ")
-        if getpass.getpass("Same password again: ") != password:
-            sys.exit("The two passwords differ. Nothing was created.")
-    problem = password_problem(password)
-    if problem:
-        sys.exit(problem)
-    return password
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Create an account.")
+    parser = argparse.ArgumentParser(description="Create an account (or make it an admin).")
     parser.add_argument("--email", required=True)
-    parser.add_argument("--admin", action="store_true", help="can manage invites and users")
+    parser.add_argument("--admin", action="store_true", help="no quotas; sees the budgets; runs the admin script")
     args = parser.parse_args()
 
     email = normalize_email(args.email)
-    if "@" not in email:
+    if not EMAIL_SHAPE.match(email):
         sys.exit(f"'{args.email}' is not an email address.")
 
     with DB(get_engine()) as db:
-        if db.scalar(select(User).where(User.email == email)):
-            print(f"{email} already has an account; nothing changed.")
-            return 1
-        db.add(User(email=email, password_hash=hash_password(ask_password()), is_admin=args.admin))
+        user = db.scalar(select(User).where(User.email == email))
+        if user:
+            if args.admin and not user.is_admin:
+                user.is_admin = True
+                db.commit()
+                print(f"{email} is now an admin.")
+            else:
+                print(f"{email} already has an account; nothing changed.")
+            return 0
+        db.add(User(email=email, is_admin=args.admin))
         db.commit()
-    print(f"Created {'admin ' if args.admin else ''}account {email}. Log in at http://localhost:8000")
+    print(f"Created {'admin ' if args.admin else ''}account {email}.")
+    print("Log in at http://localhost:8000 with this email: the code is printed in `docker compose logs api`.")
     return 0
 
 

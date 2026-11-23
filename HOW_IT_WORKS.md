@@ -85,9 +85,8 @@ app/
     usage.py           Writes one row per paid call to the usage table, for the right user and session
     budget.py          Adds the rows up: budgets, interviews per day, the spend for GET /usage
   auth/                Accounts (Phase 4.6)
-    passwords.py       Hashes and checks passwords (Argon2)
+    codes.py           The 6-digit login codes sent by email: make one, check one (stored as an HMAC)
     tokens.py          The random login token in the cookie, and its hash
-    invites.py         Invite codes: make one for an email, check one at registration
     deps.py            current_user: who is calling, or 401
     ownership.py       owned_interview / owned_document / owned_session: yours, or 404
     limits.py          Guessing limits: failed logins per email and per IP, registrations per IP (429)
@@ -117,18 +116,17 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite, AuthAttempt, Usage, QuestionAudio
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, EmailCode, AuthAttempt, Usage, QuestionAudio
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0009
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0010
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
 pricing.yaml           What each paid API charges (Claude per token kind, Deepgram, ElevenLabs, Voyage)
 scripts/
   interview_cli.py     The terminal interview (the "client"); logs in first
-  create_user.py       Creates an account (your own admin account, or a test one)
-  create_invite.py     Creates a one-use invite code for one email (printed once)
-  manage_users.py      Admin: list accounts and invites, disable / enable, reset a password, delete
+  create_user.py       Creates an account: your own admin account (no password; you log in with a code)
+  manage_users.py      Admin: list accounts, disable / enable, delete
   smoke_claude.py      Quick check that the key, models and tracing work
   seed_question_bank.py  Loads question_bank/ into the database and embeds it (runs on every start)
   embed_documents.py   Embeds documents that have no chunks yet
@@ -166,44 +164,36 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0009). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0010). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
 
-### Step 0b: you log in
+### Step 0b: you log in (or sign up) with a code sent by email
 
-Every interview and session route needs a login; only `/health`, `/auth/login`, `/auth/register` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them.
+Every interview and session route needs a login; only `/health`, `/auth/start`, `/auth/verify` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them. There are **no passwords** (Phase 4.7): typing back a code sent to your inbox proves it's yours, so the same two steps sign up a new person and log in an existing one.
 
-1. **Create your account once:** `docker compose exec api python scripts/create_user.py --email you@example.com --admin`. It asks for a password (at least 10 characters) and stores only its **Argon2 hash** ([passwords.py](app/auth/passwords.py)) in the `users` table. Admin accounts are only made this way.
-2. **Log in:** the page calls `GET /auth/me` on load. A 401 shows the login screen. `POST /auth/login` checks the password against the hash, creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
+1. **Your email:** the page calls `GET /auth/me` on load; a 401 shows the login screen. You type your email and `POST /auth/start` ([routes.py](app/auth/routes.py)) makes a 6-digit code ([codes.py](app/auth/codes.py)) and emails it through [app/mail](app/mail/__init__.py). Locally the "console" provider doesn't send anything: it prints the email in `docker compose logs api`, where you read the code. (Amazon SES, to really send emails, comes with Phase 5.)
+2. **The code:** you type it and `POST /auth/verify` checks it. The first time, it creates your account (marked `email_verified_at`). Then it creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
 3. **Every request after that:** the browser sends the cookie by itself. `current_user` hashes it, finds the matching `login_sessions` row (not expired, account not disabled) and lets the request through. Otherwise it's a 401, and the page shows the login screen again; logging in continues where you were.
 4. **Log out:** `POST /auth/logout` deletes the row, so that cookie stops working at once, even if someone copied it. The page also forgets its session id and draft (the browser may be shared).
 
+Your own admin account is made once with `docker compose exec api python scripts/create_user.py --email you@example.com --admin` (no password: you then log in with a code like everyone else). Admin accounts can only be made this way.
+
 Why these choices:
-- **Hash, not password:** the database never holds a password; Argon2 is deliberately slow, so a stolen database can only be guessed at very slowly. A wrong email and a wrong password get the same message, and the check takes the same time, so nobody can find out who has an account.
-- **The cookie** is `HttpOnly` (page scripts can't read it, so injected JavaScript can't steal it), `SameSite=Lax` (other websites can't make your browser send it with their requests) and, with `COOKIE_SECURE=true` behind HTTPS, sent over HTTPS only. It lasts `LOGIN_DAYS` (30 by default).
-- **Only the token's hash is stored**, so the `login_sessions` table can't be used to log in either.
+- **The code:** 6 random digits, valid 10 minutes (`CODE_MINUTES`), at most 5 wrong tries (`CODE_MAX_TRIES`), one use. Asking for a new code makes the older ones useless, so only the latest email counts. A login code and a "delete my account" code are separate, so one can't be used for the other.
+- **Stored as an HMAC, not the code:** an HMAC is a fingerprint computed with a server secret (`SECRET_KEY` in `.env`). A plain hash wouldn't protect much: there are only 1,000,000 possible codes, so anyone with the table could try them all in a second. Without the secret, the stored values are useless. (Without `SECRET_KEY`, a random one is made at each start, with a warning: codes sent before a restart then stop working.)
+- **"Send me a code" always answers the same** ("If this email can be used, a code is on its way"), for a new email, an existing account or a disabled one (which gets no email), so nobody can find out who has an account. A wrong, expired or used code always gets the same message too.
+- **The cookie** is `HttpOnly` (page scripts can't read it, so injected JavaScript can't steal it), `SameSite=Lax` (other websites can't make your browser send it with their requests) and, with `COOKIE_SECURE=true` behind HTTPS, sent over HTTPS only. It lasts `LOGIN_DAYS` (30 by default). **Only the token's hash is stored**, so the `login_sessions` table can't be used to log in either.
 
-The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. ### Step 0b-bis: someone you invite creates their account
-
-1. **You make a code:** `docker compose exec api python scripts/create_invite.py --email marie@example.com --note "Marie"` prints a code such as `K7QM-2XPA-9RTD`, once. You send it, with the email you typed, to that person. ([invites.py](app/auth/invites.py): 12 random characters from 31 that can't be confused, like 0 and O; about 59 bits, far too many to guess.)
-2. **They register:** on the login screen, **Create an account** (or http://localhost:8000/#register) asks for their email, a password and the code. `POST /auth/register` ([routes.py](app/auth/routes.py)) checks the code: its hash must match an `invites` row that is unused, not expired (14 days by default, `--days`) and made for **this email**. Lowercase, spaces and missing dashes don't matter.
-3. **The account is created** and they are logged in at once (same cookie as a login). The invite is marked used (`used_at`, `used_by`) in the same database transaction, and the row is locked while it is checked (`SELECT ... FOR UPDATE`), so two registrations sent at the same moment can't both use one code.
-
-Why it is built this way:
-- **One code, one person, one email:** a forwarded code is useless to anyone else, and a used code is refused.
-- **Same message for every bad code** (unknown, expired, used, or another email's), so trying codes teaches nothing. Only with the right code for that email does the answer say "this email already has an account: log in instead".
-- **Checked before spending:** a too-short password or a malformed email is refused before the code is touched, so the person can simply try again.
-- **Only the code's hash is stored** (like login tokens), so the database can't be used to register. A lost code can't be shown again: make a new one.
+The terminal CLI logs in the same way: it asks for your email (or reads `INTERVIEW_EMAIL`), then for the code, and saves the cookie in `~/.interview_cli_login` (your home folder), so the next runs don't ask again until the login expires. Delete that file to log out.
 
 ### Step 0b-ter: what protects the accounts
 
-- **Guessing limits** ([limits.py](app/auth/limits.py)): each failed login is a row in `auth_attempts` (migration 0008). After 5 wrong passwords for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right password, and the check runs before the password is looked at, so the answer reveals nothing. A successful login clears the email's failures, so honest typos never add up. One IP address also gets at most 20 failures in the window (so nobody can try 5 passwords on every email), and at most 10 registration attempts per hour. The counts are in Postgres, not in memory, so they hold with several servers. The numbers are settings (`LOGIN_MAX_FAILURES`, `LOGIN_MAX_FAILURES_PER_IP`, `LOGIN_WINDOW_MINUTES`, `REGISTER_MAX_PER_HOUR`). The trade-off: someone who knows your email can lock it for 15 minutes.
+- **Guessing and flooding limits** ([limits.py](app/auth/limits.py)): each code sent and each wrong code is a row in `auth_attempts` (migration 0008). At most 3 codes per email and 10 per IP address are sent in 15 minutes (`CODES_PER_EMAIL`, `CODES_PER_IP`), so nobody can fill someone's inbox. After 5 wrong codes for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right code, and the check runs before the code is looked at, so the answer reveals nothing. A successful login clears the email's failures. One IP address also gets at most 20 wrong codes in the window (`LOGIN_MAX_FAILURES_PER_IP`). The counts are in Postgres, not in memory, so they hold with several servers. The trade-off: someone who knows your email can lock it for 15 minutes.
 - **Origin check** ([origin.py](app/auth/origin.py)): a **middleware** (code that runs around every request, added in [main.py](app/main.py)) refuses a POST / PUT / PATCH / DELETE whose `Origin` header isn't this server, with 403. Browsers add that header to such requests and pages can't fake it. This stops **CSRF** (cross-site request forgery: a malicious page making your browser send a request here with your cookie). `SameSite=Lax` already blocks other sites, but every port of `localhost` counts as the same site, so another local app could otherwise get through. Requests with no `Origin` (the CLI, curl, tests) don't come from a page and pass.
-- **Changing the password** (`POST /auth/password`, "Your account" at the bottom of the setup page) needs the current one, and ends your other logins.
-- **Delete my account** (`DELETE /auth/me`, same box) needs the password, then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the registration form says where data goes.
-- **Admin** ([manage_users.py](scripts/manage_users.py)): `list`, `invites`, `disable EMAIL` (logged out at once, can't log in, data kept), `enable EMAIL`, `reset-password EMAIL` (prints a temporary password and logs them out everywhere; they change it in "Your account"), `delete EMAIL` (asks you to type the email again).
+- **Delete my account** ("Your account" at the bottom of the setup page): **Email me a code** (`POST /auth/delete-code`) sends a code made only for this, and typing it (`DELETE /auth/me`) confirms. That proves the inbox is still yours, so someone using a browser you left logged in can't delete your account. Then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the login screen says where data goes.
+- **Admin** ([manage_users.py](scripts/manage_users.py)): `list` (with when each email was verified), `disable EMAIL` (logged out at once, no login code is sent any more, data kept), `enable EMAIL`, `delete EMAIL` (asks you to type the email again). There are no passwords to reset.
 
 ### Step 0c: you only see your own data
 
@@ -417,7 +407,7 @@ There are two kinds of tables in the same Postgres database:
 | Tables | Owned by | Holds |
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
-| `users`, `login_sessions`, `invites`, `auth_attempts` | us (migrations 0005, 0007 and 0008; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled), logins (the hash of each cookie's token, its expiry), invite codes (hash, email, used or not) and recent failed logins / registrations (for the guessing limits; kept one day) |
+| `users`, `login_sessions`, `email_codes`, `auth_attempts` | us (migrations 0005, 0008 and 0010; 0006 adds `user_id` to interviews, documents and chunks; 0010 drops passwords and the old invites) | accounts (email, admin, disabled, when the email was verified), logins (the hash of each cookie's token, its expiry), login codes (HMAC, purpose, expiry, tries, used or not) and recent codes sent / wrong codes (for the limits; kept one day) |
 | `usage`, `question_audio` | us (migration 0009, which also adds `questions_started_at` and `brief_revisions` to `sessions`) | one row per paid API call (provider, model, what it used, its cost, user and session; kept when the account is deleted, without the link) and the spoken audio of each question, so replays are free |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
@@ -527,13 +517,12 @@ docker compose exec api pytest -q
 - that the interview's language reaches the prompts and both speech providers;
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
-- registration ([tests/test_register.py](tests/test_register.py)): a valid code creates and logs in the account and is used up; sloppy typing is accepted; a code works once and only for its email; unknown, expired, used and other-email codes get the same answer and don't burn the code; weak passwords and existing accounts are refused without spending it; only the hash is stored;
+- login by code ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login; a new email gets a code and typing it creates, verifies and logs in the account, an existing account logs in the same way; "send me a code" answers the same for every email (a disabled one gets no email); a code works once and only the latest counts, an expired code is refused, 5 wrong tries end a code, and a code only works for its email; the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused; only an HMAC of the code and a hash of the token are stored. Emails go to a fake mailbox (conftest `mailbox`), where the tests read the codes;
 - cost control ([tests/test_costs.py](tests/test_costs.py)): prices (four token kinds, Haiku's long-prompt prices, unknown models never free, speech and embeddings); every Claude response recorded, and calls inside graph nodes recorded for the right user and session; usage kept after an account is deleted; over the monthly budget a running interview still ends with feedback while a new one gets 503 (and the daily budget says "tomorrow"); interviews per day counted when questions are planned, not for briefs; brief revisions, questions, documents, characters, web pages and CV capped; big recordings refused before speech-to-text; replays not synthesized twice and long questions text-only; `GET /usage` showing the budgets only to an admin. The conftest fixture `generous_limits` empties `usage` and sets the budgets and the daily limit very high for every other test;
-- hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong password is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't spray emails or keep registering; requests from another site are refused while the app's page, the CLI and GETs pass; changing the password needs the current one and ends other logins; deleting an account leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
+- hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong code is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't try codes on many emails, and nobody can flood an inbox (per email and per IP); requests from another site are refused while the app's page, the CLI and GETs pass; deleting an account needs its own emailed code (a login code doesn't work), then leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
 - that the technical types use the question bank and that system design allows 3 follow-ups;
-- accounts ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login, a wrong password and an unknown email look the same, the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused, and only hashes are stored.
 
 **Logged in by default:** the other tests don't log in. A fixture in [conftest.py](tests/conftest.py) replaces `current_user` with a test account (`tests@example.com`) for every test; the account tests take the `real_auth` fixture, which turns that off and goes through the real cookie check.
 
@@ -559,14 +548,14 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | I want to... | Command |
 | --- | --- |
 | start everything | `docker compose up -d` |
-| create an account (your own: add `--admin`) | `docker compose exec api python scripts/create_user.py --email you@example.com` |
-| list accounts / invites; disable, enable, reset a password, delete | `docker compose exec api python scripts/manage_users.py list` (or `invites`, `disable EMAIL`, `enable EMAIL`, `reset-password EMAIL`, `delete EMAIL`) |
-| invite someone (prints a one-use code for that email) | `docker compose exec api python scripts/create_invite.py --email them@example.com --note "who"` |
+| create your admin account (once; no password) | `docker compose exec api python scripts/create_user.py --email you@example.com --admin` |
+| read your login code (locally, emails are printed in the logs) | `docker compose logs api` (look for `----- EMAIL`) |
+| list accounts; disable, enable, delete | `docker compose exec api python scripts/manage_users.py list` (or `disable EMAIL`, `enable EMAIL`, `delete EMAIL`) |
 | see the server logs | `docker compose logs -f api` |
 | stop everything | `docker compose down` |
 | delete all data and start fresh | `docker compose down -v` |
 | run a spoken interview | open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) |
-| run a typed interview in a terminal (it asks for your email and password, or reads `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD`) | `python scripts/interview_cli.py new --company "..." --role "..." --mode technical_backend --doc job_post:post.pdf --doc recruiter_email:mail.eml --cv cv.pdf` |
+| run a typed interview in a terminal (the first time it asks for your email and the code it receives, then remembers the login) | `python scripts/interview_cli.py new --company "..." --role "..." --mode technical_backend --doc job_post:post.pdf --doc recruiter_email:mail.eml --cv cv.pdf` |
 | index documents added before Phase 3 (or when Voyage failed) | `docker compose exec api python scripts/embed_documents.py` |
 | reload the question bank after editing question_bank/ | `docker compose exec api python scripts/seed_question_bank.py` (also runs on every start) |
 | see or remove your stored CV | `GET /documents/cv`, then `DELETE /documents/{id}` (from http://localhost:8000/docs) |
@@ -641,7 +630,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **API / route / endpoint**: a URL the server answers, such as `POST /sessions/{id}/resume`.
 - **Checkpointer**: saves the graph's state after every step, so it can resume later.
 - **Container**: an isolated, reproducible environment that runs one program (here: the server, or Postgres).
-- **Argon2 / password hash**: a one-way fingerprint of a password; the login check hashes what you type and compares. Argon2 is slow on purpose, to make guessing expensive.
+- **HMAC**: a fingerprint of a value computed with a secret key; without the key, nobody can compute it or check a guess. Used to store the login codes.
 - **Base64**: a way to write binary data (like audio) as plain text, so it fits inside JSON.
 - **Effort**: how much Claude thinks before answering (low, medium or high).
 - **CSRF (cross-site request forgery)**: a page on another site making your browser send a request to this one, with your cookie attached. The Origin check stops it.
@@ -682,6 +671,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4. Evals in LangSmith | planned |
 | 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | built and tested: usage recorded per call, user and session; budgets with an 80% warning; per-user, per-session and per-input limits; free replays; spend in the header. The caps in each provider's console and the comparison with their dashboards are yours to do |
 | 4.6. Accounts: email, password and an invite code; each user sees only their own data | built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration; guessing limits, Origin check, change password, delete my account, admin script, privacy note. The final check (inviting a real person) is yours to run |
+| 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | step 1 built and tested: log in and sign up with an emailed code, no passwords or invites, delete-my-account by code, CLI code login. Next: the practice, quotas and "Request more" |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

@@ -3,11 +3,11 @@ app.js - the logic of the web page: talks to the API, records your voice, plays 
 
 How it works:
 - Login first: on load, GET /auth/me says whether the browser's login cookie is still valid. If
-  not, the login screen shows (POST /auth/login sets the cookie; the browser then sends it with
-  every request by itself, and page scripts can't read it). Any 401 later (login expired,
-  account disabled) brings the login screen back, and logging in again continues where you
-  were. "Create an account" switches to the registration form (POST /auth/register: email,
-  password and invite code), which logs you in too; #register in the address opens it. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
+  not, the login screen shows: your email (POST /auth/start emails a 6-digit code), then the
+  code (POST /auth/verify sets the cookie, and creates the account the first time; the browser
+  then sends the cookie with every request by itself, and page scripts can't read it). There
+  are no passwords. Any 401 later (login expired, account disabled) brings the login screen
+  back, and logging in again continues where you were. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
   reloads the page.
 - Every screen comes from a "view" the API returns (status + what the session is waiting for).
   render(view) shows the right panel: brief review, interview, or feedback.
@@ -34,8 +34,8 @@ How it works:
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
 - Spend (header): GET /usage after logging in and after each interview: "This month: $0.42"
   for you; an admin sees the month's budget instead, in a warning color from 80%.
-- "Your account" (bottom of the setup page): change the password (POST /auth/password), or
-  delete the account and all its data (DELETE /auth/me, with the password, after a confirm).
+- "Your account" (bottom of the setup page): delete the account and all its data: "Email me a
+  code" (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
 */
 
 const $ = (id) => document.getElementById(id);
@@ -107,9 +107,9 @@ async function api(method, path, body, isForm = false) {
     }
   }
   const res = await fetch(path, options);
-  // 401 = not logged in (any more): show the login screen. A wrong password on the login form
-  // is also a 401, but that one is shown as a normal error.
-  if (res.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
+  // 401 = not logged in (any more): show the login screen. A wrong code on the login form is
+  // also a 401, but that one is shown as a normal error.
+  if (res.status === 401 && path !== "/auth/verify") {
     showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
     const err = new Error("Please log in.");
     err.status = 401;
@@ -1018,21 +1018,33 @@ function setAccount(user) {
   if (!user) $("spend").hidden = true;
 }
 
-// The login panel holds two forms: "login" or "register" (#register in the address opens it).
-function showLogin(message = "", form = location.hash === "#register" ? "register" : "login") {
+// The login panel holds two forms: "login" (your email) and "code" (the code it received).
+function showLogin(message = "", form = "login") {
   if (state.audio) state.audio.pause();
   setAccount(null);
   $("session-label").textContent = "";
   $("leave").hidden = true;
   showPanel("login");
   $("login-form").hidden = form !== "login";
-  $("register-form").hidden = form !== "register";
+  $("code-form").hidden = form !== "code";
   showError(message);
-  $(`${form}-form`).elements.email.focus();
+  (form === "code" ? $("login-code") : $("login-email")).focus();
 }
 
-$("to-register").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", "#register"); showLogin("", "register"); });
-$("to-login").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showLogin("", "login"); });
+async function sendLoginCode() {
+  const email = $("login-email").value.trim();
+  await api("POST", "/auth/start", { email });
+  $("code-email").textContent = email;
+  $("login-code").value = "";
+  showLogin("", "code");
+}
+
+$("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  run("Sending your code...", sendLoginCode);
+});
+$("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", sendLoginCode); });
+$("other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
 
 // The month's spend in the header, and the recording limit. Failing to load it is not an error.
 const dollars = (x) => `$${x.toFixed(2)}`;
@@ -1070,39 +1082,21 @@ async function startApp() {
   }
 }
 
-$("login-form").addEventListener("submit", (e) => {
+$("code-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const f = $("login-form").elements;
   run("Logging in...", async () => {
-    const user = await api("POST", "/auth/login", { email: f.email.value, password: f.password.value });
-    f.password.value = "";
+    const user = await api("POST", "/auth/verify", { email: $("login-email").value.trim(), code: $("login-code").value });
+    $("login-code").value = "";
     setAccount(user);
     showError("");
     await startApp();
   });
 });
 
-$("register-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const f = $("register-form").elements;
-  run("Creating your account...", async () => {
-    const user = await api("POST", "/auth/register",
-      { email: f.email.value, password: f.password.value, code: f.code.value });
-    $("register-form").reset();
-    history.replaceState(null, "", location.pathname); // drop #register from the address
-    setAccount(user);
-    showError("");
-    await startApp();
-  });
-});
-
-$("password-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const f = $("password-form").elements;
-  run("Changing your password...", async () => {
-    await api("POST", "/auth/password", { current_password: f.current.value, new_password: f.new.value });
-    $("password-form").reset();
-    alert("Your password is changed. Your other logins have ended.");
+$("delete-send-code").addEventListener("click", () => {
+  run("Sending a code...", async () => {
+    const reply = await api("POST", "/auth/delete-code");
+    alert(`${reply.detail} Type it here to confirm.`);
   });
 });
 
@@ -1111,7 +1105,7 @@ $("delete-account-form").addEventListener("submit", (e) => {
   if (!confirm("Delete your account and ALL your interviews, documents, CV and feedback? This can't be undone.")) return;
   const f = $("delete-account-form").elements;
   run("Deleting your account...", async () => {
-    await api("DELETE", "/auth/me", { password: f.password.value });
+    await api("DELETE", "/auth/me", { code: f.code.value });
     remember("sessionId", null);
     clearDraft();
     alert("Your account and all its data are deleted.");

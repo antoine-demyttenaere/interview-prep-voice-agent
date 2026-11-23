@@ -12,6 +12,12 @@ Everything is per user: `user` (from current_user, app/auth/deps.py) is the logg
 New interviews and documents get its user_id, and an id that belongs to someone else answers
 404, exactly like an id that doesn't exist (app/auth/ownership.py).
 
+Limits (Phase 4.5, set in .env): an interview holds at most MAX_DOCUMENTS_PER_INTERVIEW (10)
+documents and MAX_DOCUMENT_CHARS_PER_INTERVIEW (200,000) characters, of which at most
+MAX_WEB_PAGES_PER_INTERVIEW (3) web pages; a CV holds at most MAX_CV_CHARS (50,000). All of it
+is sent to Claude for the brief and embedded, so these limits keep one interview's cost bounded.
+The embedding calls are recorded for the user (app/costs/usage.py).
+
 Every new document is saved, then ingested: cut into chunks, embedded with Voyage and stored in
 the chunks table (app/rag/ingest.py), so the interviewer can search it. If embedding fails, the
 document is kept and the reply says why ("embedding_error").
@@ -27,11 +33,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DB
 
 from app.auth.deps import current_user
 from app.auth.ownership import owned_document, owned_interview
+from app.config import get_settings
+from app.costs import usage
 from app.db.models import Document, Interview, User
 from app.db.session import get_db
 from app.rag.embeddings import EmbeddingError
@@ -130,14 +138,40 @@ def _check_target(db: DB, user: User, interview_id: uuid.UUID | None, doc_type: 
         raise HTTPException(422, "Only the CV can be stored without an interview_id")
 
 
+def _check_room(db: DB, interview_id: uuid.UUID | None, new_chars: int, web_page: bool = False) -> None:
+    """422 if this document would go over the interview's (or the CV's) limits."""
+    s = get_settings()
+    if interview_id is None:  # a CV
+        if new_chars > s.max_cv_chars:
+            raise HTTPException(422, f"This CV is too long ({new_chars:,} characters; at most {s.max_cv_chars:,}).")
+        return
+    count, chars = db.execute(
+        select(func.count(), func.coalesce(func.sum(func.length(Document.raw_text)), 0))
+        .where(Document.interview_id == interview_id)
+    ).one()
+    if count >= s.max_documents_per_interview:
+        raise HTTPException(422, f"An interview can have at most {s.max_documents_per_interview} documents. "
+                                 "Delete one, or merge your notes into one text.")
+    if chars + new_chars > s.max_document_chars_per_interview:
+        raise HTTPException(422, f"Too much text for one interview: at most {s.max_document_chars_per_interview:,} "
+                                 f"characters in all (this one would make {chars + new_chars:,}).")
+    if web_page:
+        pages = db.scalar(select(func.count()).where(Document.interview_id == interview_id,
+                                                     Document.source.like("http%")))
+        if pages >= s.max_web_pages_per_interview:
+            raise HTTPException(422, f"An interview can have at most {s.max_web_pages_per_interview} web pages.")
+
+
 def _save_and_ingest(db: DB, doc: Document) -> dict:
     """Save the document, then chunk + embed it. An embedding failure keeps the document."""
+    _check_room(db, doc.interview_id, len(doc.raw_text or ""), web_page=doc.source.startswith("http"))
     db.add(doc)
     db.commit()
     result = {"id": str(doc.id), "interview_id": str(doc.interview_id) if doc.interview_id else None,
               "doc_type": doc.doc_type, "source": doc.source, "chars": len(doc.raw_text or "")}
     try:
-        result["chunks"] = ingest_document(db, doc)
+        with usage.attribute(doc.user_id):  # the embedding calls are this user's
+            result["chunks"] = ingest_document(db, doc)
     except EmbeddingError as exc:
         db.rollback()
         result.update(chunks=0, embedding_error=f"{exc}. Run scripts/embed_documents.py once it is fixed.")
@@ -186,6 +220,7 @@ class LinkIn(BaseModel):
 def add_document_from_url(body: LinkIn, db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
     """A web page: the server downloads it, keeps its readable text, then chunks and embeds it."""
     _check_target(db, user, body.interview_id, body.doc_type)
+    _check_room(db, body.interview_id, 0, web_page=True)  # before downloading anything
     try:
         title, text = fetch_page(body.url)
     except ParseError as exc:

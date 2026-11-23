@@ -60,6 +60,28 @@ class Settings(BaseSettings):
     login_window_minutes: int = 15
     register_max_per_hour: int = 10
 
+    # Cost control (Phase 4.5, app/costs/budget.py). Budgets in US dollars for all users
+    # together; at budget_warn_ratio (80%) the page warns the admin, at 100% new interviews
+    # are refused (one already running still finishes). The day is a UTC calendar day.
+    budget_monthly_usd: float = 10.0
+    budget_daily_usd: float = 1.5
+    budget_claude_usd: float = 4.5
+    budget_elevenlabs_usd: float = 4.0
+    budget_deepgram_usd: float = 1.0
+    budget_voyage_usd: float = 0.5
+    budget_warn_ratio: float = 0.8
+    # Limits per user, per session and per input (plan.md, "Cost control").
+    interviews_per_day: int = 4  # per user: interviews whose questions were planned today
+    brief_revisions_max: int = 3  # "ask for changes" per session
+    max_questions: int = 8  # questions per session (num_questions is the default)
+    max_recording_seconds: int = 180  # the page stops recording an answer after this
+    max_recording_bytes: int = 5_000_000  # the server refuses bigger recordings
+    max_spoken_chars: int = 600  # longer questions are shown as text, not spoken
+    max_documents_per_interview: int = 10
+    max_document_chars_per_interview: int = 200_000
+    max_web_pages_per_interview: int = 3
+    max_cv_chars: int = 50_000
+
     @property
     def psycopg_url(self) -> str:
         """Plain libpq URL (no SQLAlchemy driver suffix) for psycopg / the checkpointer."""

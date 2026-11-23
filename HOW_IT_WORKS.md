@@ -78,8 +78,12 @@ Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on 
 ```
 app/
   main.py              The server's entry point: starts the checkpointer, mounts the routes, /health
-  config.py            Settings read from .env (models, limits, database URL)
-  llm.py               The only place that calls Claude: structured() and text_reply()
+  config.py            Settings read from .env (models, limits, budgets, database URL)
+  llm.py               The only place that calls Claude: structured() and text_reply(); records each call's cost
+  costs/               Cost control (Phase 4.5)
+    pricing.py         Reads pricing.yaml: what a call used -> dollars
+    usage.py           Writes one row per paid call to the usage table, for the right user and session
+    budget.py          Adds the rows up: budgets, interviews per day, the spend for GET /usage
   auth/                Accounts (Phase 4.6)
     passwords.py       Hashes and checks passwords (Argon2)
     tokens.py          The random login token in the cookie, and its hash
@@ -93,6 +97,7 @@ app/
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
     sessions.py        Start a session, resume it with your reply, retry a failed step
+    usage.py           GET /usage: your spend and limits; the budgets for the admin
   graph/               The interviewer (LangGraph)
     state.py           What the graph remembers (the "state")
     nodes.py           The 7 steps and the 3 routing functions
@@ -112,12 +117,13 @@ app/
     ingest.py          Document -> chunks -> embeddings -> chunks table
     retrieve.py        Question -> closest chunks, or closest question-bank questions
   db/
-    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite, AuthAttempt
+    models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, Invite, AuthAttempt, Usage, QuestionAudio
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0008
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0009
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
+pricing.yaml           What each paid API charges (Claude per token kind, Deepgram, ElevenLabs, Voyage)
 scripts/
   interview_cli.py     The terminal interview (the "client"); logs in first
   create_user.py       Creates an account (your own admin account, or a test one)
@@ -160,7 +166,7 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0008). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0009). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
@@ -412,6 +418,7 @@ There are two kinds of tables in the same Postgres database:
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
 | `users`, `login_sessions`, `invites`, `auth_attempts` | us (migrations 0005, 0007 and 0008; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled), logins (the hash of each cookie's token, its expiry), invite codes (hash, email, used or not) and recent failed logins / registrations (for the guessing limits; kept one day) |
+| `usage`, `question_audio` | us (migration 0009, which also adds `questions_started_at` and `brief_revisions` to `sessions`) | one row per paid API call (provider, model, what it used, its cost, user and session; kept when the account is deleted, without the link) and the spoken audio of each question, so replays are free |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
@@ -461,6 +468,34 @@ All calls go through [app/llm.py](app/llm.py):
 
 ---
 
+## 10b. What it costs, and the budgets
+
+Every paid call is priced and recorded, so the app can stop itself before it spends too much (Phase 4.5, [app/costs/](app/costs/)).
+
+**Recording.** Each provider is called from one place, and that place records the call right after a successful answer: [llm.py](app/llm.py) (Claude: the four kinds of tokens of `response.usage`, priced by `response.model`, so a fallback model is priced right), [stt.py](app/voice/stt.py) (Deepgram: the seconds of audio from its reply), [tts.py](app/voice/tts.py) (ElevenLabs: the characters sent) and [embeddings.py](app/rag/embeddings.py) (Voyage: the tokens from its reply). [usage.py](app/costs/usage.py) multiplies by the prices in [pricing.yaml](pricing.yaml) (re-read when it changes, like the prompts) and writes a row to `usage`. If writing the row fails, it only logs a warning: bookkeeping never stops an interview.
+
+**Whose call is it?** The provider code runs deep inside the graph and doesn't know who it works for. So the routes wrap their work in `with usage.attribute(user_id, session_id):` ([sessions.py](app/api/sessions.py) around `graph.invoke`, the voice turn and `/speak`; [interviews.py](app/api/interviews.py) around ingestion). That stores the two ids in a **ContextVar**, a variable private to the current request, which LangGraph copies into the threads that run the nodes. Calls outside any such block (seeding the question bank, evaluations, the smoke test) are recorded with no user and still count in the budgets.
+
+**Budgets** (all users together, in `.env`): $10 a month, $1.50 a day, and per provider for the month (Claude $4.50, ElevenLabs $4, Deepgram $1, Voyage $0.50). [budget.py](app/costs/budget.py) adds up the rows of the current UTC month and day. When one is used up, a new session and the start of the questions are refused with **503**, and the message says when it resets. **An interview already running always finishes**: answers, scores and the feedback still go through. At 80% (`BUDGET_WARN_RATIO`) the header shows the admin the budget in a warning color. As a safety net in case the app's count is wrong, also set a cap in each provider's console (plan.md, "Cost control").
+
+**Limits per user, session and input** (all in `.env`):
+
+| Limit | Default | Where it's checked |
+| --- | --- | --- |
+| Interviews per user per UTC day | 4 | when the questions are planned (approving the brief, or a session on an approved brief): `sessions.questions_started_at` counts it, so writing and revising briefs doesn't use one up (429) |
+| Brief revisions per session | 3 | "Ask for changes" (429); you can still edit it yourself or approve |
+| Questions per session | 8 | starting a session (422); 5 by default |
+| Recording per answer | 3 minutes, 5 MB | the page sends the answer by itself after `MAX_RECORDING_SECONDS`; the server refuses bigger files before calling Deepgram (413) |
+| Spoken question length | 600 characters | longer questions are shown as text only |
+| Documents per interview | 10, 200,000 characters, 3 web pages | adding a document (422) |
+| CV | 50,000 characters | adding it (422) |
+
+**Free replays.** The first time a question is spoken, its audio is saved in `question_audio` (per session, keyed by a hash of the voice settings, language and text). Replaying it, or reloading the page, reads it back instead of paying ElevenLabs again.
+
+**Seeing the spend.** `GET /usage` ([app/api/usage.py](app/api/usage.py)) returns your own spend this month and today, your interviews today and the limits the page needs; an admin also gets every budget with what's spent. The header shows "This month: $0.42", or for the admin "Budget: $3.10 / $10.00 this month" (hover for the details).
+
+---
+
 ## 11. Seeing what happened: LangSmith
 
 Open [smith.langchain.com](https://smith.langchain.com), project **interview-prep-voice-agent**. Each API request that runs the graph shows up as a trace:
@@ -493,6 +528,7 @@ docker compose exec api pytest -q
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
 - registration ([tests/test_register.py](tests/test_register.py)): a valid code creates and logs in the account and is used up; sloppy typing is accepted; a code works once and only for its email; unknown, expired, used and other-email codes get the same answer and don't burn the code; weak passwords and existing accounts are refused without spending it; only the hash is stored;
+- cost control ([tests/test_costs.py](tests/test_costs.py)): prices (four token kinds, Haiku's long-prompt prices, unknown models never free, speech and embeddings); every Claude response recorded, and calls inside graph nodes recorded for the right user and session; usage kept after an account is deleted; over the monthly budget a running interview still ends with feedback while a new one gets 503 (and the daily budget says "tomorrow"); interviews per day counted when questions are planned, not for briefs; brief revisions, questions, documents, characters, web pages and CV capped; big recordings refused before speech-to-text; replays not synthesized twice and long questions text-only; `GET /usage` showing the budgets only to an admin. The conftest fixture `generous_limits` empties `usage` and sets the budgets and the daily limit very high for every other test;
 - hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong password is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't spray emails or keep registering; requests from another site are refused while the app's page, the CLI and GETs pass; changing the password needs the current one and ends other logins; deleting an account leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
@@ -545,6 +581,8 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 
 **LangGraph Studio** (optional, not tested yet) shows the graph visually and lets you run steps one by one. [langgraph.json](langgraph.json) tells it where the graph is (`app/graph/build.py:graph`) and to load `.env`. To use it, install the CLI on your machine (`pip install "langgraph-cli[inmem]"`), then run `langgraph dev` in the project folder.
 
+**What did it cost?** The header shows the month's spend. For details, in a database shell: `SELECT provider, model, round(sum(cost_usd), 4) FROM usage WHERE created_at >= date_trunc('month', now()) GROUP BY 1, 2;` Compare with each provider's dashboard now and then: they should agree within about 20%.
+
 Postgres is on port **5433** on your machine, not the usual 5432. The database name, user and password are `interview` / `app` / `app`, for local use only.
 
 ---
@@ -554,6 +592,10 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 **Improve a prompt.** Edit the file in `prompts/` and save. The next call uses it. Keep the `$placeholders` the step expects; they're listed in the file's header.
 
 **Change how answers are scored.** Edit the criteria in `rubrics/<mode>.yaml`. No code changes are needed.
+
+**Change a price.** Edit [pricing.yaml](pricing.yaml); the next call uses it, no restart. Add a new model there before switching to it (an unlisted model is priced at the provider's high "default" price, with a warning in the logs).
+
+**Change a budget or a cost limit.** Set it in `.env` (`BUDGET_MONTHLY_USD`, `BUDGET_DAILY_USD`, `BUDGET_CLAUDE_USD`, ..., `INTERVIEWS_PER_DAY`, `BRIEF_REVISIONS_MAX`, `MAX_QUESTIONS`, `MAX_RECORDING_SECONDS`, `MAX_SPOKEN_CHARS`, `MAX_DOCUMENTS_PER_INTERVIEW`, ...), then `docker compose up -d --force-recreate api`.
 
 **Change a model or a limit.** Set it in `.env` (`MODEL_TURN`, `MODEL_REASONING`, `NUM_QUESTIONS`, `MAX_FOLLOWUPS`), then run `docker compose up -d --force-recreate api`.
 
@@ -606,6 +648,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **Cookie**: a small value the server asks the browser to keep and send back with every request; here it holds the random login token.
 - **Chunk**: a piece of a document (a few paragraphs) that is embedded and searched on its own.
 - **Cosine distance / similarity**: how far apart two embeddings point; similarity 1 means the same meaning, 0 unrelated.
+- **ContextVar**: a Python variable whose value belongs to the current request (thread or task), so two requests running at once never see each other's value. Used to know whose paid call is being recorded.
 - **Embedding**: a list of numbers representing the meaning of a text; similar texts have nearby numbers.
 - **HNSW index**: a search index that links each vector to its neighbours, so the closest vectors are found without checking every row.
 - **401 / Unauthorized**: the HTTP answer meaning "log in first".
@@ -637,7 +680,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 2. Voice: speech-to-text, text-to-speech, one-page web UI, English / French / Spanish | built and tested with fake providers; the spoken check (under ~3 s per turn) needs the Deepgram and ElevenLabs keys |
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
-| 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned (after 4.6, so it can count per user) |
+| 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | built and tested: usage recorded per call, user and session; budgets with an 80% warning; per-user, per-session and per-input limits; free replays; spend in the header. The caps in each provider's console and the comparison with their dashboards are yours to do |
 | 4.6. Accounts: email, password and an invite code; each user sees only their own data | built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration; guessing limits, Origin check, change password, delete my account, admin script, privacy note. The final check (inviting a real person) is yours to run |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |

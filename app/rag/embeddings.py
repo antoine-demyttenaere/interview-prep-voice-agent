@@ -12,6 +12,7 @@ Texts are sent in batches of 128, as Voyage recommends. Rate limits: a Voyage ac
 payment method is limited to 3 requests and 10K tokens per minute. When Voyage answers 429
 ("too many requests"), document embedding waits and retries (up to about a minute); a search
 query does not wait, so an interview turn is never held up: the search is skipped instead.
+Each Voyage request is recorded with its token count and cost (app/costs/usage.py, Phase 4.5).
 """
 
 import time
@@ -19,6 +20,8 @@ from functools import lru_cache
 from typing import Literal, Protocol
 
 import httpx
+
+from app.costs import usage
 
 from app.config import get_settings
 
@@ -68,7 +71,9 @@ class VoyageEmbedder:
                 break
             if resp.status_code != 200:
                 raise EmbeddingError(f"Voyage error {resp.status_code}: {resp.text[:300]}")
-            data = sorted(resp.json()["data"], key=lambda d: d["index"])
+            body = resp.json()
+            usage.record_units("voyage", self.model, "tokens", float(body.get("usage", {}).get("total_tokens") or 0))
+            data = sorted(body["data"], key=lambda d: d["index"])
             vectors.extend(d["embedding"] for d in data)
         return vectors
 

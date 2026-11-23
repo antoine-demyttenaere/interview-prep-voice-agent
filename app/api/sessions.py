@@ -12,6 +12,13 @@ Every route works only on your own sessions: `user` comes from current_user (app
 and owned_session / owned_interview (app/auth/ownership.py) answer 404 for anyone else's. The
 brief is written from this interview's documents plus your own CV, never another user's.
 
+Cost control (Phase 4.5, app/costs/): every paid call made while a route works for a session is
+recorded for that user and session (`usage.attribute`). A new session, and the moment its
+questions are planned, are refused when a budget is used up or the user's interviews for today
+are done (app/costs/budget.py); an interview already running always finishes. Brief revisions
+per session, questions per session, recording size and spoken question length are capped, and
+each question's audio is saved (question_audio table), so a replay doesn't pay for speech again.
+
 Each call runs the graph until it pauses again (interrupt()) and returns a "view": status
 (waiting / done / stopped), pending (what it is waiting for), and final_feedback at the end.
 The checkpointer saves the graph's state under thread_id = session id. After each run, _run()
@@ -24,6 +31,7 @@ LangSmith trace ("voice_turn"); the audio bytes are left out of the trace, only 
 """
 
 import base64
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +49,9 @@ from sqlalchemy.orm import Session as DB
 from app.auth.deps import current_user
 from app.auth.ownership import owned_interview, owned_session
 from app.config import get_settings
-from app.db.models import Document, Interview, Session, User
+from app.costs import usage
+from app.costs.budget import check_budget, check_can_start_interview
+from app.db.models import Document, Interview, QuestionAudio, Session, User
 from app.db.session import get_db
 from app.graph import prompts
 from app.graph.schemas import InterviewBrief
@@ -56,7 +66,7 @@ AUDIO_DIR = Path(__file__).resolve().parents[2] / "evals" / "audio"
 
 
 class SessionIn(BaseModel):
-    num_questions: int | None = Field(None, ge=1, le=15)
+    num_questions: int | None = Field(None, ge=1, le=15, description="At most MAX_QUESTIONS (8 by default)")
     duration_min: int | None = Field(None, ge=10, le=180, description="Interview length shown as a countdown")
     review_brief: bool = Field(False, description="Show the existing brief for review again before the questions")
 
@@ -126,16 +136,19 @@ def _view(graph, session: Session) -> dict:
 
 def _run(graph, session: Session, graph_input, db: DB) -> dict:
     """Run the graph to its next pause, then mirror results into our own tables."""
+    interview = db.get(Interview, session.interview_id)
     try:
-        graph.invoke(graph_input, _config(session))
+        with usage.attribute(interview.user_id, session.id):  # Claude and Voyage calls are this user's
+            graph.invoke(graph_input, _config(session))
     except LLMError as exc:
         raise HTTPException(502, f"Claude call failed: {exc}. POST /sessions/{session.id}/retry to try again.")
 
     values = graph.get_state(_config(session)).values or {}
-    interview = db.get(Interview, session.interview_id)
     if values.get("brief_approved") and values.get("brief") != interview.brief:
         interview.brief = values["brief"]
         interview.brief_status = "approved"
+    if values.get("questions") and session.questions_started_at is None:
+        session.questions_started_at = datetime.now(timezone.utc)  # counts as one of today's interviews
     if values.get("final_feedback") and session.ended_at is None:
         session.ended_at = datetime.now(timezone.utc)
     db.commit()
@@ -148,6 +161,10 @@ def _run(graph, session: Session, graph_input, db: DB) -> dict:
 def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db: DB = Depends(get_db),
                   user: User = Depends(current_user)) -> dict:
     interview = owned_interview(db, user, interview_id)
+    check_budget(db)  # even writing a brief costs a Sonnet call
+    max_q = get_settings().max_questions
+    if body.num_questions and body.num_questions > max_q:
+        raise HTTPException(422, f"At most {max_q} questions per interview.")
 
     docs = db.scalars(  # this interview's documents and your CV
         select(Document)
@@ -158,14 +175,17 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
     if not docs:
         raise HTTPException(422, "Add at least one document (job post, email, notes or CV) first")
 
+    approved = interview.brief_status == "approved" and interview.brief
+    # Going back to the brief from an interview: start at the review, with the same brief.
+    review_again = body.review_brief and interview.brief
+    if approved and not review_again:
+        check_can_start_interview(db, user)  # this goes straight to planning the questions
+
     session_id = uuid.uuid4()
     session = Session(id=session_id, interview_id=interview_id, thread_id=str(session_id))
     db.add(session)
     db.commit()
 
-    approved = interview.brief_status == "approved" and interview.brief
-    # Going back to the brief from an interview: start at the review, with the same brief.
-    review_again = body.review_brief and interview.brief
     initial = {
         "session_id": str(session.id),
         "interview_id": str(interview.id),
@@ -202,6 +222,15 @@ def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: 
     if pending["type"] == "review_brief":
         if not isinstance(body.value, BriefDecision):
             raise HTTPException(422, "Expected a brief decision: {action: approve | edit | revise, ...}")
+        if body.value.action == "revise":
+            limit = get_settings().brief_revisions_max
+            if session.brief_revisions >= limit:
+                raise HTTPException(429, f"You have asked for changes {limit} times in this session, the limit. "
+                                         "Edit the brief yourself, or approve it.")
+            session.brief_revisions += 1
+            db.commit()
+        else:  # approve or edit: the questions are planned next, so this starts an interview
+            check_can_start_interview(db, user)
         value = body.value.model_dump(mode="json")
     else:  # "answer"
         if not isinstance(body.value, str) or not body.value.strip():
@@ -271,6 +300,26 @@ def _synthesize(text: str, language: str) -> dict:
     return {"audio": speech.audio, "mime_type": speech.mime_type}
 
 
+class TooLongToSpeak(Exception):
+    """The question is longer than MAX_SPOKEN_CHARS: it is shown as text, not spoken."""
+
+
+def _question_audio(db: DB, session: Session, text: str, language: str) -> dict:
+    """The question's audio, from the question_audio table if it was already spoken in this
+    session (free), otherwise from text-to-speech (paid), then saved for the next replay."""
+    s = get_settings()
+    if len(text) > s.max_spoken_chars:
+        raise TooLongToSpeak(f"This question is long ({len(text)} characters), so it is shown as text only.")
+    key = hashlib.sha256(f"{s.tts_provider}|{s.tts_model}|{s.elevenlabs_voice_id}|{language}|{text}".encode()).hexdigest()
+    saved = db.scalar(select(QuestionAudio).where(QuestionAudio.session_id == session.id, QuestionAudio.text_hash == key))
+    if saved:
+        return {"audio": saved.audio, "mime_type": saved.mime_type}
+    speech = _synthesize(text, language)
+    db.add(QuestionAudio(session_id=session.id, text_hash=key, mime_type=speech["mime_type"], audio=speech["audio"]))
+    db.commit()
+    return speech
+
+
 def _save_recording(session: Session, q_index: int, audio: bytes, mime_type: str) -> None:
     """With SAVE_AUDIO=true, keep the recording so it can be replayed without speaking."""
     ext = next((e for e in ("webm", "ogg", "mp4", "wav", "mpeg") if e in mime_type), "bin")
@@ -315,9 +364,9 @@ def _voice_turn(graph, session: Session, audio: bytes, mime_type: str, db: DB) -
     if view["status"] == "waiting" and view["pending"]["type"] == "answer":
         t = perf_counter()
         try:
-            speech = _synthesize(view["pending"]["question"], language)
+            speech = _question_audio(db, session, view["pending"]["question"], language)
             audio_out = {"mime_type": speech["mime_type"], "base64": base64.b64encode(speech["audio"]).decode()}
-        except SpeechError as exc:
+        except (SpeechError, TooLongToSpeak) as exc:
             audio_error = str(exc)  # the interview goes on; the page shows the text instead
         timings["text_to_speech"] = round((perf_counter() - t) * 1000)
 
@@ -343,10 +392,14 @@ def voice_turn(
     graph = request.app.state.graph
     session = owned_session(db, user, session_id)
     _waiting_answer(graph, session)
-    data = audio.file.read()
+    limit = get_settings().max_recording_bytes
+    data = audio.file.read(limit + 1)
     if not data:
         raise HTTPException(422, "The recording is empty")
-    return _voice_turn(graph, session, data, audio.content_type or "", db)
+    if len(data) > limit:
+        raise HTTPException(413, "The recording is too long. Keep each answer under 3 minutes.")
+    with usage.attribute(user.id, session.id):  # Deepgram and ElevenLabs calls are this user's
+        return _voice_turn(graph, session, data, audio.content_type or "", db)
 
 
 @router.post("/sessions/{session_id}/speak", response_class=Response)
@@ -357,7 +410,10 @@ def speak_question(session_id: uuid.UUID, request: Request, db: DB = Depends(get
     session = owned_session(db, user, session_id)
     pending = _waiting_answer(graph, session)
     try:
-        speech = _synthesize(pending["question"], _language(graph, session))
+        with usage.attribute(user.id, session.id):
+            speech = _question_audio(db, session, pending["question"], _language(graph, session))
+    except TooLongToSpeak as exc:
+        raise HTTPException(422, str(exc))
     except SpeechError as exc:
         raise HTTPException(502, f"Text-to-speech failed: {exc}")
     return Response(content=speech["audio"], media_type=speech["mime_type"])

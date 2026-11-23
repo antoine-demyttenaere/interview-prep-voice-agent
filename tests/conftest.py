@@ -14,6 +14,10 @@ pytest loads conftest.py automatically.
   off and goes through the real cookie check (tests/test_auth.py).
 - No leftover attempts: auth_attempts (the login and registration limits) is emptied before
   each test, so failures from one test or one earlier run never lock out the next.
+- Generous cost limits: the usage table is emptied before each test and the budgets and the
+  "interviews per day" limit are set very high (fixture `generous_limits`), since the test
+  account starts many interviews. A test that checks a limit lowers it with monkeypatch
+  (tests/test_costs.py).
 """
 
 import hashlib
@@ -36,7 +40,8 @@ from sqlalchemy.orm import Session as DB  # noqa: E402
 
 from app.auth.deps import current_user  # noqa: E402
 from app.auth.passwords import hash_password  # noqa: E402
-from app.db.models import AuthAttempt, User  # noqa: E402
+from app.config import get_settings  # noqa: E402
+from app.db.models import AuthAttempt, Usage, User  # noqa: E402
 from app.db.session import get_engine  # noqa: E402
 from app.graph import nodes  # noqa: E402
 from app.main import app  # noqa: E402
@@ -83,6 +88,17 @@ def no_auth_attempts(test_database):
     with DB(get_engine()) as db:
         db.execute(delete(AuthAttempt))
         db.commit()
+
+
+@pytest.fixture(autouse=True)
+def generous_limits(test_database, monkeypatch):
+    with DB(get_engine()) as db:
+        db.execute(delete(Usage))
+        db.commit()
+    s = get_settings()
+    monkeypatch.setattr(s, "interviews_per_day", 100_000)
+    for name in ("monthly", "daily", "claude", "elevenlabs", "deepgram", "voyage"):
+        monkeypatch.setattr(s, f"budget_{name}_usd", 1_000_000.0)
 
 
 @pytest.fixture(autouse=True)

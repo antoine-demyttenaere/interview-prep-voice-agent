@@ -6,10 +6,15 @@ What it measures, per case (cases.yaml, plus evals/private/answer_scoring.yaml i
 - follow_up_ok    1 if the follow-up decision matches the expected one, else 0 (skipped when
                   either is fine). The decision checked is the node's final one, after the
                   code applies the follow-up limit.
-- latency_s, cost_usd   time and price of the Claude call(s)
+- latency_s, cost_usd   time and price of the Claude call(s), priced from pricing.yaml
+                  (app/costs/pricing.py), like the app's own usage table
 - invalid         1 if the case produced no usable output (Claude error, timeout); such cases
                   are counted apart, never as a wrong score
 Plus, for the whole run: follow-up precision, recall and specificity.
+
+Cost control (Phase 4.5): every Claude call of a run is also written to the usage table (with
+no user), so evaluations count in the month's budget; a run refuses to start once a budget is
+used up. A full run costs about $0.04, far below the $1 per run planned in plan.md.
 
 How it runs: the cases are uploaded once as a LangSmith dataset (its name includes a hash of
 the cases, so changing a case creates a new dataset version), then LangSmith's evaluate() calls
@@ -39,6 +44,10 @@ from langsmith import Client
 
 from app.config import get_settings
 from app.graph import nodes
+from sqlalchemy.orm import Session as DB
+
+from app.costs import budget, pricing
+from app.db.session import get_engine
 from app.llm import LLMError, record_calls
 
 HERE = Path(__file__).resolve().parent
@@ -48,8 +57,6 @@ RUNS = HERE / "runs"
 CASE_TIMEOUT_S = 120  # hard ceiling per case; a slower case is recorded as a timeout, not a score
 
 # $ per million tokens, from the Claude API price table (Haiku 5.5, prompts under 100K tokens).
-PRICES = {"claude-haiku-5-5": {"in": 0.10, "out": 0.50}}
-
 # Files whose content decides the result: their hash is stored with each experiment, so you can
 # see in LangSmith which prompt version a run used.
 HARNESS_FILES = [
@@ -123,15 +130,7 @@ def build_state(inputs: dict) -> dict:
 
 
 def cost_usd(calls: list[dict]) -> float:
-    total = 0.0
-    for c in calls:
-        price = next((p for m, p in PRICES.items() if c["model"].startswith(m)), None)
-        if price is None:
-            raise RuntimeError(f"No price for model {c['model']}: add it to PRICES")
-        u = c["usage"]
-        tokens_in = u["input_tokens"] + 1.25 * u["cache_creation_input_tokens"] + 0.1 * u["cache_read_input_tokens"]
-        total += (tokens_in * price["in"] + u["output_tokens"] * price["out"]) / 1_000_000
-    return round(total, 6)
+    return round(sum(pricing.claude_cost(c["model"], c["usage"]) for c in calls), 6)
 
 
 def target(inputs: dict) -> dict:
@@ -295,6 +294,11 @@ def main() -> None:
     parser.add_argument("--no-private", action="store_true", help="leave out the cases from your real answers")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
+
+    with DB(get_engine()) as db:
+        exceeded = budget.status(db)["exceeded"]
+    if exceeded:
+        raise SystemExit(f"Budget used up ({', '.join(exceeded)}): no evaluation run until it resets.")
 
     all_cases = load_cases(with_private=not args.no_private)
     client = Client()

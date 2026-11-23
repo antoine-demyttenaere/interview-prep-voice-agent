@@ -12,6 +12,8 @@ Both send the system prompt with cache_control: a long system prompt repeated on
 runs out of tokens or returns nothing usable; the API turns that into an error you can retry.
 fallback=True (Sonnet only) lets the API retry on a backup model if Sonnet declines a request.
 record_calls() lets an evaluation capture each call's model, token usage and time.
+Every response is also written to the usage table with its cost (app/costs/usage.py), for the
+user and session the API route named, so the budgets (Phase 4.5) count every Claude call.
 """
 
 import time
@@ -23,6 +25,8 @@ from typing import TypeVar
 import anthropic
 from langsmith.wrappers import wrap_anthropic
 from pydantic import BaseModel
+
+from app.costs import usage as usage_log
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -58,19 +62,23 @@ def record_calls():
 
 
 def _record(response, started: float) -> None:
+    u = response.usage
+    tokens = {
+        "input_tokens": u.input_tokens or 0,
+        "output_tokens": u.output_tokens or 0,
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+    }
+    # response.model is the model that answered (a fallback model if Sonnet declined), so the
+    # cost uses the right price.
+    usage_log.record_claude(response.model, tokens)
     calls = _recorded.get()
     if calls is not None:
-        usage = response.usage
         calls.append({
             "model": response.model,
             "stop_reason": response.stop_reason,
             "latency_s": round(time.perf_counter() - started, 3),
-            "usage": {
-                "input_tokens": usage.input_tokens or 0,
-                "output_tokens": usage.output_tokens or 0,
-                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
-            },
+            "usage": tokens,
         })
 
 

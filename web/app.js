@@ -19,7 +19,7 @@ How it works:
   POST /documents.
 - Recording uses the browser's MediaRecorder: click the button (or press Space) to start, and
   again to stop and send the audio to POST /sessions/{id}/turn (it also stops by itself after
-  5 minutes). The reply holds what was heard, the next question, its audio (base64) and how
+  MAX_RECORDING_SECONDS, 3 minutes by default, read from GET /usage). The reply holds what was heard, the next question, its audio (base64) and how
   long each step took.
 - Typed answers (Voice switched off) go to POST /sessions/{id}/resume, like the terminal CLI.
 - The transcript is grouped by question; "Based on N documents" folds open to show which of
@@ -32,6 +32,8 @@ How it works:
   (score -> comment, a stronger answer, and your own answer from the transcript).
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
+- Spend (header): GET /usage after logging in and after each interview: "This month: $0.42"
+  for you; an admin sees the month's budget instead, in a warning color from 80%.
 - "Your account" (bottom of the setup page): change the password (POST /auth/password), or
   delete the account and all its data (DELETE /auth/me, with the password, after a confirm).
 */
@@ -368,6 +370,7 @@ function exchangeFor(transcript, number) {
 
 function renderFeedback(view) {
   showPanel("feedback");
+  loadUsage(); // the interview's cost is now in the month's spend
   const fb = view.final_feedback;
   const names = Object.fromEntries((view.rubric || []).map((c) => [c.id, c.name]));
   const prettify = (id) => names[id] || id.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
@@ -692,7 +695,9 @@ $("revise").addEventListener("click", () => {
 
 // ---------- interview: voice ----------
 
-const MAX_RECORDING_MS = 5 * 60 * 1000; // safety net: an answer is sent after 5 minutes
+// An answer is sent by itself after MAX_RECORDING_SECONDS (from GET /usage; 3 minutes by
+// default), because speech-to-text is billed per second of audio.
+let maxRecordingMs = 3 * 60 * 1000;
 
 async function startRecording() {
   if (state.recorder || state.starting || $("talk").disabled) return;
@@ -707,12 +712,12 @@ async function startRecording() {
     state.recorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
     state.recorder.start();
     state.recordStart = Date.now();
-    state.autoStop = setTimeout(stopRecording, MAX_RECORDING_MS);
+    state.autoStop = setTimeout(stopRecording, maxRecordingMs);
     $("talk").classList.add("recording");
     $("talk").textContent = "Stop and send";
     showPending("candidate");
     // "1:23 / 5:00" under the button; coral blinking in the last 30 seconds
-    const limit = MAX_RECORDING_MS / 1000;
+    const limit = maxRecordingMs / 1000;
     const tick = () => {
       const s = (Date.now() - state.recordStart) / 1000;
       $("rec-timer").textContent = `${fmt(s)} / ${fmt(limit)}`;
@@ -1010,6 +1015,7 @@ function setAccount(user) {
   $("account").textContent = user ? user.email : "";
   $("account").hidden = !user;
   $("logout").hidden = !user;
+  if (!user) $("spend").hidden = true;
 }
 
 // The login panel holds two forms: "login" or "register" (#register in the address opens it).
@@ -1028,9 +1034,30 @@ function showLogin(message = "", form = location.hash === "#register" ? "registe
 $("to-register").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", "#register"); showLogin("", "register"); });
 $("to-login").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", location.pathname); showLogin("", "login"); });
 
+// The month's spend in the header, and the recording limit. Failing to load it is not an error.
+const dollars = (x) => `$${x.toFixed(2)}`;
+async function loadUsage() {
+  try {
+    const u = await api("GET", "/usage");
+    maxRecordingMs = u.limits.max_recording_seconds * 1000;
+    const box = $("spend");
+    const month = u.budget && u.budget.budgets.find((b) => b.name === "month");
+    if (month) { // admin: everyone's spend against the month's budget
+      box.textContent = `Budget: ${dollars(month.spent)} / ${dollars(month.budget)} this month`;
+      box.classList.toggle("spend-warn", u.budget.warning);
+      box.title = u.budget.budgets.map((b) => `${b.name}: ${dollars(b.spent)} of ${dollars(b.budget)}`).join("\n");
+    } else {
+      box.textContent = `This month: ${dollars(u.you.month_usd)}`;
+      box.title = `Interviews today: ${u.you.interviews_today} of ${u.you.interviews_per_day}`;
+    }
+    box.hidden = false;
+  } catch (_) {}
+}
+
 // Continue the last session of this browser, if there is one; otherwise show the setup form,
 // with the draft you were typing.
 async function startApp() {
+  loadUsage();
   restoreDraft();
   const saved = recall("sessionId");
   if (!saved) return showSetup(0);

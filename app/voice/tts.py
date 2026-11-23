@@ -8,6 +8,7 @@
 
 The voice is set by ELEVENLABS_VOICE_ID (a premade voice by default). Sentence-by-sentence
 streaming, so the interviewer starts talking sooner, is Phase 6.
+Each synthesis is recorded with its character count and cost (app/costs/usage.py, Phase 4.5).
 """
 
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from functools import lru_cache
 from typing import Protocol
 
 import httpx
+
+from app.costs import usage
 
 from app.config import get_settings
 from app.voice import SpeechError
@@ -50,6 +53,7 @@ class ElevenLabsTTS:
             raise SpeechError(f"ElevenLabs unreachable: {exc}") from exc
         if resp.status_code != 200:
             raise SpeechError(f"ElevenLabs error {resp.status_code}: {resp.text[:300]}")
+        usage.record_units("elevenlabs", self.model, "characters", len(text))  # billed per character
         mime = resp.headers.get("content-type", "").split(";")[0]
         if not mime.startswith("audio/"):
             mime = "audio/mpeg" if self.output_format.startswith("mp3") else "application/octet-stream"

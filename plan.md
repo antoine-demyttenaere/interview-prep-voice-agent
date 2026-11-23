@@ -223,11 +223,12 @@ The MVP is done at the end of Phase 2. Each phase ends with a check I run myself
 
 Built after Phase 4.6, so that spending and limits can be counted per user.
 
-- [ ] `usage` table (with `user_id`) and `pricing.yaml`; record the cost of every Claude, Deepgram, ElevenLabs and Voyage call
-- [ ] Budget guard: warn at 80%, refuse new sessions at 100% of the monthly or daily budget, let a running interview finish
-- [ ] Per-session and per-input limits from the Cost control section, set in `.env`, counted per user
-- [ ] Save each question's audio so replays are free
-- [ ] Month's spend shown on the web page; a cap set in each provider's console
+- [x] `usage` table (with `user_id`) and `pricing.yaml`; record the cost of every Claude, Deepgram, ElevenLabs and Voyage call
+- [x] Budget guard: warn at 80%, refuse new sessions at 100% of the monthly or daily budget, let a running interview finish
+- [x] Per-session and per-input limits from the Cost control section, set in `.env`, counted per user (an interview counts toward the daily limit once its questions are planned, so briefs don't use one up; a CV is capped at 50,000 characters)
+- [x] Save each question's audio so replays are free
+- [x] Month's spend shown on the web page (the admin sees the budget, highlighted from 80%)
+- [ ] A cap set in each provider's console (Claude Console spend limit, ElevenLabs without usage-based billing, Deepgram prepaid only)
 
 **Check:** with the monthly budget set to $0.01, a running interview still ends with feedback and a new one is refused with a clear message. The recorded cost of one real interview is within 20% of what the providers' dashboards show.
 

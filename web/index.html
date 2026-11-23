@@ -24,7 +24,7 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  and per question
 "New interview" (top right) goes back to the setup form at any time; the button next to it
 switches between light and dark colors. Your email and "Log out" sit next to them once you're
-logged in.
+logged in, with the month's spend (GET /usage; an admin sees the budget, in Sun from 80%).
 No build step and no framework: edit a file, reload the page.
 -->
 <!doctype html>
@@ -49,6 +49,7 @@ No build step and no framework: edit a file, reload the page.
     <span class="top-right">
       <span id="session-label" class="muted small"></span>
       <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
+      <span id="spend" class="spend small" hidden></span>
       <span id="account" class="muted small" hidden></span>
       <button id="logout" type="button" class="btn btn-ghost btn-small" hidden>Log out</button>
       <!-- Light / dark switch: the knob slides to the sun (light) or the moon (dark) -->
@@ -150,7 +151,7 @@ No build step and no framework: edit a file, reload the page.
                 <option value="es">Español</option>
               </select>
             </label>
-            <label>Questions <input name="questions" type="number" min="1" max="15" value="5"></label>
+            <label>Questions <input name="questions" type="number" min="1" max="8" value="5"></label>
             <label>Duration
               <select name="duration">
                 <option value="30">30 min</option>

@@ -20,6 +20,9 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
   creates the account (POST /auth/register). Only a hash of the code is stored.
 - AuthAttempt: one failed login or one registration attempt, counted by app/auth/limits.py to
   slow down password guessing.
+- Usage: one paid API call (Claude, Deepgram, ElevenLabs, Voyage) with what it used and cost,
+  written by app/costs/usage.py and added up by app/costs/budget.py.
+- QuestionAudio: the spoken audio of one question in one session, so a replay costs nothing.
 
 Who owns what: interviews, documents and chunks have a user_id; sessions belong to their
 interview. app/auth/ownership.py checks it on every request (someone else's row answers 404).
@@ -31,7 +34,10 @@ import uuid
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, Numeric, String, Text,
+    UniqueConstraint, func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -124,6 +130,10 @@ class Session(Base):
     thread_id: Mapped[str] = mapped_column(String(100), unique=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Cost control (Phase 4.5): when the questions were planned (the interview really started,
+    # counted by the "interviews per day" limit), and how many brief revisions were asked for.
+    questions_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    brief_revisions: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class User(Base):
@@ -181,4 +191,40 @@ class AuthAttempt(Base):
     kind: Mapped[str] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(320))
     ip: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Usage(Base):
+    """One paid API call: who it was for, what it used (quantity of unit) and what it cost.
+
+    user_id and session_id become empty if the account or session is deleted, but the row stays,
+    so the month's spend is still right. Rows with no user are the server's own work (seeding
+    the question bank, evaluations, the smoke test).
+    """
+
+    __tablename__ = "usage"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    provider: Mapped[str] = mapped_column(String(20))  # claude | deepgram | elevenlabs | voyage
+    model: Mapped[str] = mapped_column(String(100))
+    unit: Mapped[str] = mapped_column(String(20))  # tokens | seconds | characters
+    quantity: Mapped[float] = mapped_column(Float)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6))
+    details: Mapped[dict] = mapped_column(JSONB, default=dict)  # e.g. Claude's four token counts
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"))
+
+
+class QuestionAudio(Base):
+    """The interviewer's audio for one question text in one session (deleted with the session)."""
+
+    __tablename__ = "question_audio"
+    __table_args__ = (UniqueConstraint("session_id", "text_hash"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    text_hash: Mapped[str] = mapped_column(String(64))  # SHA-256 of the voice settings + language + text
+    mime_type: Mapped[str] = mapped_column(String(50))
+    audio: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

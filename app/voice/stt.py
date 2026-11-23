@@ -10,6 +10,7 @@
 The browser records WebM/Opus (Chrome, Edge), Ogg (Firefox) or MP4 (Safari); Deepgram detects
 the format itself, we only pass the Content-Type. Streaming recognition (words appearing while
 you speak) is Phase 6.
+Each transcription is recorded with its audio length and cost (app/costs/usage.py, Phase 4.5).
 """
 
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from functools import lru_cache
 from typing import Protocol
 
 import httpx
+
+from app.costs import usage
 
 from app.config import get_settings
 from app.voice import SpeechError
@@ -54,7 +57,10 @@ class DeepgramSTT:
             raise SpeechError(f"Deepgram unreachable: {exc}") from exc
         if resp.status_code != 200:
             raise SpeechError(f"Deepgram error {resp.status_code}: {resp.text[:300]}")
-        alt = resp.json()["results"]["channels"][0]["alternatives"][0]
+        data = resp.json()
+        # Deepgram bills the length of the audio; its reply says how long it was (seconds).
+        usage.record_units("deepgram", self.model, "seconds", float(data.get("metadata", {}).get("duration") or 0))
+        alt = data["results"]["channels"][0]["alternatives"][0]
         return Transcript(text=(alt.get("transcript") or "").strip(), confidence=alt.get("confidence"))
 
 

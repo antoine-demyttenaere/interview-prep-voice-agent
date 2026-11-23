@@ -10,6 +10,7 @@ You upload a job post, recruiter emails, call notes and your CV. Claude writes a
 - **Grounded in your documents:** PDF, Word, `.eml` emails, text or a web page are split into chunks, embedded and searched for each question, so the questions reflect the real company and role.
 - **You stay in control:** the interview pauses so you can read, edit or approve the brief before it starts, and you can end it early at any point.
 - **Scored feedback:** each answer gets a 1-5 score per rubric criterion, and you get strengths, gaps and what to work on.
+- **Cost-controlled:** every paid call is priced and recorded per user. Monthly and daily budgets stop new interviews (never a running one), each user has daily limits, and replaying a question is free.
 - **Traceable and evaluated:** every turn is one LangSmith trace (speech-to-text, each graph step, the Claude calls, text-to-speech). A separate eval suite measures how well Claude scores answers on labelled cases.
 
 ## How it works
@@ -110,6 +111,6 @@ The app is meant to run on your own machine, and both ports are bound to `127.0.
 | 0-3: skeleton, typed interview with brief review, voice, document uploads and search, technical interview types | built |
 | 4: evals in LangSmith | in progress (answer-scoring eval done) |
 | 4.6: accounts with email, password and invite code | built |
-| 4.5: cost control, per user | planned (after 4.6) |
+| 4.5: cost control, per user | built |
 | 5: deployment on AWS with Terraform | planned |
 | 6: streaming, live turn detection, personas | planned |

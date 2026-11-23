@@ -6,7 +6,11 @@
 - POST /documents           pasted text (body DocumentIn); leave interview_id empty for your CV
 - POST /documents/upload    a file (PDF, DOCX, EML, TXT, MD), sent as a multipart form
 - POST /documents/from-url  a link (job post, company page): the server reads the page's text
-- GET  /documents/cv        your shared CV documents;  DELETE /documents/{id} removes one
+- GET  /documents/cv        your CV documents (shared by your interviews);  DELETE /documents/{id} removes one
+
+Everything is per user: `user` (from current_user, app/auth/deps.py) is the logged-in account.
+New interviews and documents get its user_id, and an id that belongs to someone else answers
+404, exactly like an id that doesn't exist (app/auth/ownership.py).
 
 Every new document is saved, then ingested: cut into chunks, embedded with Voyage and stored in
 the chunks table (app/rag/ingest.py), so the interviewer can search it. If embedding fails, the
@@ -26,7 +30,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DB
 
-from app.db.models import Document, Interview
+from app.auth.deps import current_user
+from app.auth.ownership import owned_document, owned_interview
+from app.db.models import Document, Interview, User
 from app.db.session import get_db
 from app.rag.embeddings import EmbeddingError
 from app.rag.ingest import ingest_document
@@ -51,7 +57,7 @@ class InterviewIn(BaseModel):
 
 
 class DocumentIn(BaseModel):
-    interview_id: uuid.UUID | None = Field(None, description="Leave empty for the CV, shared by all interviews")
+    interview_id: uuid.UUID | None = Field(None, description="Leave empty for the CV, shared by all your interviews")
     doc_type: DocType
     source: str = "pasted"
     text: str = Field(min_length=1)
@@ -89,8 +95,8 @@ class InterviewUpdate(BaseModel):
 
 
 @router.post("/interviews", status_code=201)
-def create_interview(body: InterviewIn, db: DB = Depends(get_db)) -> dict:
-    interview = Interview(**body.model_dump())
+def create_interview(body: InterviewIn, db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    interview = Interview(**body.model_dump(), user_id=user.id)
     db.add(interview)
     db.commit()
     db.refresh(interview)
@@ -98,12 +104,11 @@ def create_interview(body: InterviewIn, db: DB = Depends(get_db)) -> dict:
 
 
 @router.patch("/interviews/{interview_id}")
-def update_interview(interview_id: uuid.UUID, body: InterviewUpdate, db: DB = Depends(get_db)) -> dict:
+def update_interview(interview_id: uuid.UUID, body: InterviewUpdate, db: DB = Depends(get_db),
+                     user: User = Depends(current_user)) -> dict:
     """Change an interview (e.g. after going back from its brief). Its brief must be written
     again, so an approved brief is reset."""
-    interview = db.get(Interview, interview_id)
-    if not interview:
-        raise HTTPException(404, "Interview not found")
+    interview = owned_interview(db, user, interview_id)
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(interview, field, value)
     interview.brief, interview.brief_status = None, "none"
@@ -113,16 +118,14 @@ def update_interview(interview_id: uuid.UUID, body: InterviewUpdate, db: DB = De
 
 
 @router.get("/interviews/{interview_id}")
-def get_interview(interview_id: uuid.UUID, db: DB = Depends(get_db)) -> dict:
-    interview = db.get(Interview, interview_id)
-    if not interview:
-        raise HTTPException(404, "Interview not found")
-    return interview_out(interview)
+def get_interview(interview_id: uuid.UUID, db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    return interview_out(owned_interview(db, user, interview_id))
 
 
-def _check_target(db: DB, interview_id: uuid.UUID | None, doc_type: str) -> None:
-    if interview_id and not db.get(Interview, interview_id):
-        raise HTTPException(404, "Interview not found")
+def _check_target(db: DB, user: User, interview_id: uuid.UUID | None, doc_type: str) -> None:
+    """A document can only be attached to one of your own interviews (or be your CV)."""
+    if interview_id:
+        owned_interview(db, user, interview_id)
     if interview_id is None and doc_type != "cv":
         raise HTTPException(422, "Only the CV can be stored without an interview_id")
 
@@ -142,11 +145,11 @@ def _save_and_ingest(db: DB, doc: Document) -> dict:
 
 
 @router.post("/documents", status_code=201)
-def add_document(body: DocumentIn, db: DB = Depends(get_db)) -> dict:
+def add_document(body: DocumentIn, db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
     """Pasted text."""
-    _check_target(db, body.interview_id, body.doc_type)
+    _check_target(db, user, body.interview_id, body.doc_type)
     return _save_and_ingest(db, Document(
-        interview_id=body.interview_id, doc_type=body.doc_type, source=body.source, raw_text=body.text,
+        user_id=user.id, interview_id=body.interview_id, doc_type=body.doc_type, source=body.source, raw_text=body.text,
     ))
 
 
@@ -156,6 +159,7 @@ def upload_document(
     doc_type: DocType | None = Form(None, description="Guessed from the file if empty (.eml -> recruiter_email)"),
     interview_id: uuid.UUID | None = Form(None, description="Leave empty for your CV"),
     db: DB = Depends(get_db),
+    user: User = Depends(current_user),
 ) -> dict:
     """An uploaded file: its text is extracted, stored, then chunked and embedded."""
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
@@ -166,9 +170,9 @@ def upload_document(
     except ParseError as exc:
         raise HTTPException(422, str(exc))
     doc_type = doc_type or parsed.doc_type_guess
-    _check_target(db, interview_id, doc_type)
+    _check_target(db, user, interview_id, doc_type)
     return _save_and_ingest(db, Document(
-        interview_id=interview_id, doc_type=doc_type, source=file.filename or "upload", raw_text=parsed.text,
+        user_id=user.id, interview_id=interview_id, doc_type=doc_type, source=file.filename or "upload", raw_text=parsed.text,
     ))
 
 
@@ -179,31 +183,32 @@ class LinkIn(BaseModel):
 
 
 @router.post("/documents/from-url", status_code=201)
-def add_document_from_url(body: LinkIn, db: DB = Depends(get_db)) -> dict:
+def add_document_from_url(body: LinkIn, db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
     """A web page: the server downloads it, keeps its readable text, then chunks and embeds it."""
-    _check_target(db, body.interview_id, body.doc_type)
+    _check_target(db, user, body.interview_id, body.doc_type)
     try:
         title, text = fetch_page(body.url)
     except ParseError as exc:
         raise HTTPException(422, str(exc))
     header = f"{title}\n{body.url}\n\n" if title else f"{body.url}\n\n"
     return _save_and_ingest(db, Document(
-        interview_id=body.interview_id, doc_type=body.doc_type, source=body.url[:300], raw_text=header + text,
+        user_id=user.id, interview_id=body.interview_id, doc_type=body.doc_type, source=body.url[:300], raw_text=header + text,
     ))
 
 
 @router.get("/documents/cv")
-def list_cv(db: DB = Depends(get_db)) -> list[dict]:
-    """The shared CV documents (used by every interview)."""
-    docs = db.scalars(select(Document).where(Document.interview_id.is_(None)).order_by(Document.created_at)).all()
+def list_cv(db: DB = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    """Your CV documents (used by every one of your interviews)."""
+    docs = db.scalars(
+        select(Document)
+        .where(Document.user_id == user.id, Document.interview_id.is_(None))
+        .order_by(Document.created_at)
+    ).all()
     return [{"id": str(d.id), "source": d.source, "chars": len(d.raw_text or ""), "chunks": len(d.chunks)} for d in docs]
 
 
 @router.delete("/documents/{document_id}", status_code=204)
-def delete_document(document_id: uuid.UUID, db: DB = Depends(get_db)) -> None:
+def delete_document(document_id: uuid.UUID, db: DB = Depends(get_db), user: User = Depends(current_user)) -> None:
     """Remove a document and its chunks (e.g. an old CV). Briefs already written are not changed."""
-    doc = db.get(Document, document_id)
-    if not doc:
-        raise HTTPException(404, "Document not found")
-    db.delete(doc)
+    db.delete(owned_document(db, user, document_id))
     db.commit()

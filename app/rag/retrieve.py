@@ -1,6 +1,8 @@
 """Retrieval: finds the chunks (or question-bank questions) closest in meaning to a search text.
 
-- search_documents(interview_id, query): this interview's documents plus your CV.
+- search_documents(interview_id, query): this interview's documents plus its owner's CV. The
+  owner is looked up from the interview row (a subquery), so a search can never reach another
+  user's chunks, even though the graph only knows the interview id.
 - search_question_bank(mode, query): seeded questions for the technical modes.
 
 Both embed the query (as "query"), then ask Postgres for the rows with the smallest cosine
@@ -14,12 +16,13 @@ without the extra context instead of stopping.
 """
 
 import logging
+import uuid
 
 from langsmith import traceable
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session as DB
 
-from app.db.models import Chunk, QuestionBankItem
+from app.db.models import Chunk, Interview, QuestionBankItem
 from app.db.session import get_engine
 from app.rag import embeddings
 
@@ -36,14 +39,17 @@ def _query_vector(query: str) -> list[float] | None:
 
 @traceable(run_type="retriever", name="search_documents")
 def search_documents(interview_id: str, query: str, k: int = 3) -> list[dict]:
-    """The k chunks of this interview's documents (and the CV) closest to the query."""
+    """The k chunks of this interview's documents (and its owner's CV) closest to the query."""
     vector = _query_vector(query)
     if vector is None:
         return []
+    interview_id = uuid.UUID(str(interview_id))
+    owner = select(Interview.user_id).where(Interview.id == interview_id).scalar_subquery()
     distance = Chunk.embedding.cosine_distance(vector).label("distance")
     stmt = (
         select(Chunk, distance)
-        .where(or_(Chunk.interview_id == interview_id, Chunk.interview_id.is_(None)))
+        .where(Chunk.user_id == owner,
+               or_(Chunk.interview_id == interview_id, Chunk.interview_id.is_(None)))
         .order_by(distance)
         .limit(k)
     )

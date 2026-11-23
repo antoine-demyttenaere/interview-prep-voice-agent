@@ -2,7 +2,7 @@
 
 ingest_documents(db, docs) cuts each document's text into chunks (chunking.py), embeds all the
 chunks of all the documents in as few Voyage requests as possible (embeddings.py, as
-"document"), and writes them to the chunks table with the document's interview_id, type and
+"document"), and writes them to the chunks table with the document's interview_id, user_id, type and
 source copied in, so a search can filter on them without a join. Running it again on the same
 documents replaces their chunks, so it is safe to repeat. ingest_document(db, doc) does one.
 
@@ -31,6 +31,7 @@ def ingest_documents(db: DB, docs: list[Document]) -> dict:
         db.add(Chunk(
             document_id=doc.id,
             interview_id=doc.interview_id,
+            user_id=doc.user_id,
             chunk_index=i,
             text=text,
             embedding=vector,

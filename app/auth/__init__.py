@@ -4,6 +4,7 @@
 - tokens.py     makes the random login token kept in the cookie, and its hash for the database
 - deps.py       current_user: the FastAPI dependency that every protected route runs first
 - routes.py     POST /auth/login, POST /auth/logout, GET /auth/me
+- ownership.py  owned_interview / owned_document / owned_session: a row only if it's yours, else 404
 
 app/main.py mounts routes.py and puts current_user in front of the interview and session
 routes, so they answer 401 to anyone who isn't logged in. scripts/create_user.py creates an

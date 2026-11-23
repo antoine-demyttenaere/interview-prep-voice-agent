@@ -8,6 +8,10 @@
 - POST /sessions/{id}/turn        voice: your recorded answer in, the next question as audio out
 - POST /sessions/{id}/speak       voice: the current question as audio (first question, replay)
 
+Every route works only on your own sessions: `user` comes from current_user (app/auth/deps.py),
+and owned_session / owned_interview (app/auth/ownership.py) answer 404 for anyone else's. The
+brief is written from this interview's documents plus your own CV, never another user's.
+
 Each call runs the graph until it pauses again (interrupt()) and returns a "view": status
 (waiting / done / stopped), pending (what it is waiting for), and final_feedback at the end.
 The checkpointer saves the graph's state under thread_id = session id. After each run, _run()
@@ -34,8 +38,10 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session as DB
 
+from app.auth.deps import current_user
+from app.auth.ownership import owned_interview, owned_session
 from app.config import get_settings
-from app.db.models import Document, Interview, Session
+from app.db.models import Document, Interview, Session, User
 from app.db.session import get_db
 from app.graph import prompts
 from app.graph.schemas import InterviewBrief
@@ -136,24 +142,17 @@ def _run(graph, session: Session, graph_input, db: DB) -> dict:
     return _view(graph, session)
 
 
-def _get_session(db: DB, session_id: uuid.UUID) -> Session:
-    session = db.get(Session, session_id)
-    if not session:
-        raise HTTPException(404, "Session not found")
-    return session
-
-
 # ---------- routes ----------
 
 @router.post("/interviews/{interview_id}/sessions", status_code=201)
-def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db: DB = Depends(get_db)) -> dict:
-    interview = db.get(Interview, interview_id)
-    if not interview:
-        raise HTTPException(404, "Interview not found")
+def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db: DB = Depends(get_db),
+                  user: User = Depends(current_user)) -> dict:
+    interview = owned_interview(db, user, interview_id)
 
-    docs = db.scalars(
+    docs = db.scalars(  # this interview's documents and your CV
         select(Document)
-        .where(or_(Document.interview_id == interview_id, Document.interview_id.is_(None)))
+        .where(Document.user_id == user.id,
+               or_(Document.interview_id == interview_id, Document.interview_id.is_(None)))
         .order_by(Document.created_at)
     ).all()
     if not docs:
@@ -186,14 +185,16 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> dict:
-    return _view(request.app.state.graph, _get_session(db, session_id))
+def get_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db),
+                user: User = Depends(current_user)) -> dict:
+    return _view(request.app.state.graph, owned_session(db, user, session_id))
 
 
 @router.post("/sessions/{session_id}/resume")
-def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: DB = Depends(get_db)) -> dict:
+def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: DB = Depends(get_db),
+                   user: User = Depends(current_user)) -> dict:
     graph = request.app.state.graph
-    session = _get_session(db, session_id)
+    session = owned_session(db, user, session_id)
     pending = _pending(graph.get_state(_config(session)))
     if not pending:
         raise HTTPException(409, "This session is not waiting for input")
@@ -211,10 +212,11 @@ def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: 
 
 
 @router.post("/sessions/{session_id}/retry")
-def retry_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> dict:
+def retry_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db),
+                  user: User = Depends(current_user)) -> dict:
     """Re-run the step that failed (e.g. a Claude error), from the last saved checkpoint."""
     graph = request.app.state.graph
-    session = _get_session(db, session_id)
+    session = owned_session(db, user, session_id)
     snapshot = graph.get_state(_config(session))
     if _pending(snapshot) or not snapshot.next:
         raise HTTPException(409, "Nothing to retry: the session is waiting for input or finished")
@@ -222,10 +224,11 @@ def retry_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_
 
 
 @router.post("/sessions/{session_id}/end")
-def end_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> dict:
+def end_session(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db),
+                user: User = Depends(current_user)) -> dict:
     """Stop now and get the final feedback on the questions answered so far."""
     graph = request.app.state.graph
-    session = _get_session(db, session_id)
+    session = owned_session(db, user, session_id)
     snapshot = graph.get_state(_config(session))
     pending = _pending(snapshot)
     if not pending or pending["type"] != "answer":
@@ -335,9 +338,10 @@ def voice_turn(
     request: Request,
     audio: UploadFile = File(..., description="Your recorded answer (webm, ogg, mp4 or wav)"),
     db: DB = Depends(get_db),
+    user: User = Depends(current_user),
 ) -> dict:
     graph = request.app.state.graph
-    session = _get_session(db, session_id)
+    session = owned_session(db, user, session_id)
     _waiting_answer(graph, session)
     data = audio.file.read()
     if not data:
@@ -346,10 +350,11 @@ def voice_turn(
 
 
 @router.post("/sessions/{session_id}/speak", response_class=Response)
-def speak_question(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db)) -> Response:
+def speak_question(session_id: uuid.UUID, request: Request, db: DB = Depends(get_db),
+                   user: User = Depends(current_user)) -> Response:
     """The current question as audio: used for the first question, typed answers and replays."""
     graph = request.app.state.graph
-    session = _get_session(db, session_id)
+    session = owned_session(db, user, session_id)
     pending = _waiting_answer(graph, session)
     try:
         speech = _synthesize(pending["question"], _language(graph, session))

@@ -89,7 +89,7 @@ The tests check that the code works and make no API calls. The evals check how g
 
 ## Privacy
 
-The app is meant to run on your own machine, and both ports are bound to `127.0.0.1`. Every interview route needs a login: passwords are stored as Argon2 hashes, and the login cookie is HttpOnly and SameSite=Lax. Keeping each user's data separate, and invite codes, are the next steps of Phase 4.6.
+The app is meant to run on your own machine, and both ports are bound to `127.0.0.1`. Every interview route needs a login: passwords are stored as Argon2 hashes, and the login cookie is HttpOnly and SameSite=Lax. Each user sees only their own interviews, documents and CV. Registration with invite codes is the next step of Phase 4.6.
 
 - Your real documents go in `my_docs/`, eval cases built from your own answers go in `evals/private/`, and recordings go in `evals/audio/`. Git ignores all three.
 - Everything in `samples/` and `evals/answer_scoring/cases.yaml` is fictional.
@@ -101,7 +101,7 @@ The app is meant to run on your own machine, and both ports are bound to `127.0.
 | --- | --- |
 | 0-3: skeleton, typed interview with brief review, voice, document uploads and search, technical interview types | built |
 | 4: evals in LangSmith | in progress (answer-scoring eval done) |
-| 4.6: accounts with email, password and invite code | in progress (login done) |
+| 4.6: accounts with email, password and invite code | in progress (login and per-user data done; invite codes next) |
 | 4.5: cost control, per user | planned (after 4.6) |
 | 5: deployment on AWS with Terraform | planned |
 | 6: streaming, live turn detection, personas | planned |

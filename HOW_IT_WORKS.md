@@ -84,6 +84,7 @@ app/
     passwords.py       Hashes and checks passwords (Argon2)
     tokens.py          The random login token in the cookie, and its hash
     deps.py            current_user: who is calling, or 401
+    ownership.py       owned_interview / owned_document / owned_session: yours, or 404
     routes.py          /auth/login, /auth/logout, /auth/me
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
@@ -109,7 +110,7 @@ app/
   db/
     models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0005
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0006
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
@@ -153,7 +154,7 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0005). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the API has no login and serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0006). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
@@ -172,7 +173,15 @@ Why these choices:
 - **The cookie** is `HttpOnly` (page scripts can't read it, so injected JavaScript can't steal it), `SameSite=Lax` (other websites can't make your browser send it with their requests) and, with `COOKIE_SECURE=true` behind HTTPS, sent over HTTPS only. It lasts `LOGIN_DAYS` (30 by default).
 - **Only the token's hash is stored**, so the `login_sessions` table can't be used to log in either.
 
-The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. For now every logged-in account can see every interview; each user seeing only their own data is the next step (Phase 4.6 step 2).
+The terminal CLI logs in the same way, with `INTERVIEW_EMAIL` / `INTERVIEW_PASSWORD` or by asking, and keeps the cookie in memory for the run. ### Step 0c: you only see your own data
+
+Every interview, document and chunk has a `user_id` (migration 0006); a session belongs to its interview. So:
+
+- **New rows get your id:** `create_interview` and the document routes set `user_id=user.id`, and ingestion copies it into each chunk.
+- **Every id in a URL is checked:** routes load rows through [ownership.py](app/auth/ownership.py) (`owned_interview`, `owned_document`, `owned_session`). Someone else's id answers **404, not 403**: a 403 would confirm the id exists, so with 404 another user's interview looks exactly like one that was never created. You also can't attach a document to someone else's interview.
+- **Your CV is yours:** a CV is a document with no `interview_id` and your `user_id`. `GET /documents/cv` lists only yours, a new session's brief reads only this interview's documents and your CV, and the search ([retrieve.py](app/rag/retrieve.py)) only looks at chunks whose `user_id` is the interview's owner. The owner is looked up from the interview row inside the query, so even though the graph only knows the interview id, a search can never reach another user's chunks.
+
+**Data from before accounts:** migration 0006 gives every existing row to the oldest admin account (or the oldest account). If there is data but no account, it stops with a message; create your account with `docker compose run --rm api python scripts/create_user.py --email you@example.com --admin` (a one-off container, which works even while the server can't start), then `docker compose up -d`.
 
 ### Step 1: create the interview and add documents
 
@@ -186,7 +195,7 @@ python scripts/interview_cli.py new --company "Northwind Logistics" --role "Seni
 Both send the same requests:
 
 - `POST /interviews` `{"company": "...", "role": "...", "mode": "behavioral", "language": "en"}` → [interviews.py](app/api/interviews.py) `create_interview` adds a row to the `interviews` table.
-- `POST /documents` (pasted text) or `POST /documents/upload` (a file) for the CV, with no `interview_id`. Your CV is stored once and shared by all interviews.
+- `POST /documents` (pasted text) or `POST /documents/upload` (a file) for the CV, with no `interview_id`. Your CV is stored once and shared by all your interviews (other users have their own).
 - The same for the job post and any emails or notes, with the interview's id.
 
 ### Step 1b: your documents become searchable
@@ -212,7 +221,7 @@ The reply says how many chunks were made. If Voyage fails, the document is still
 
 The CLI sends `POST /interviews/{id}/sessions`. In [sessions.py](app/api/sessions.py) `start_session`:
 
-1. Loads the interview's documents, plus your CV.
+1. Loads the interview's documents, plus your CV (only yours: see Step 0c).
 2. Creates a `sessions` row. Its **thread_id** (the same value as the session id) is the label the checkpointer uses for this session's saved progress.
 3. Builds the **initial state**: mode, company, role, documents, and `brief_approved: False`.
 4. Calls `graph.invoke(initial_state, config)`. LangGraph starts running steps.
@@ -266,7 +275,7 @@ flowchart LR
   evaluate_answer -- "all questions done" --> final_feedback
 ```
 
-- **`ask`** first **searches your documents** (`retrieve.search_documents`): the planned question (or the follow-up's focus) is embedded as a "query", and Postgres returns the 3 closest chunks of this interview's documents and your CV (`RETRIEVAL_K`). Then Haiku gets [prompts/ask.md](prompts/ask.md) with the transcript so far, those passages, and a directive: [ask_question.md](prompts/ask_question.md) for a new question, or [ask_followup.md](prompts/ask_followup.md) for a follow-up. Haiku writes what the interviewer says, in natural spoken words, and can use a detail from a passage ("you mentioned the RabbitMQ migration..."). The line is added to the transcript with `sources`: the files the passages came from. The web page shows them under the question ("Based on: cv.pdf, job_post.txt").
+- **`ask`** first **searches your documents** (`retrieve.search_documents`): the planned question (or the follow-up's focus) is embedded as a "query", and Postgres returns the 3 closest chunks of this interview's documents and its owner's CV (`RETRIEVAL_K`). Then Haiku gets [prompts/ask.md](prompts/ask.md) with the transcript so far, those passages, and a directive: [ask_question.md](prompts/ask_question.md) for a new question, or [ask_followup.md](prompts/ask_followup.md) for a follow-up. Haiku writes what the interviewer says, in natural spoken words, and can use a detail from a passage ("you mentioned the RabbitMQ migration..."). The line is added to the transcript with `sources`: the files the passages came from. The web page shows them under the question ("Based on: cv.pdf, job_post.txt").
 - **`answer`** pauses with `interrupt({"type": "answer", "question": ...})`. The CLI shows the question and you type your answer. The CLI then sends `POST /sessions/{id}/resume` with `{"value": "your answer"}`, and the answer is added to the transcript.
 - **`evaluate_answer`** (Haiku) fills [prompts/evaluate_answer.md](prompts/evaluate_answer.md) with the rubric and this question's exchange, and returns an `AnswerEvaluation`: a score per criterion, an overall score, a summary, and whether to follow up and on what.
   - If Claude wants a follow-up **and** fewer than 2 have been asked on this question (`MAX_FOLLOWUPS`; 3 in system design, set by `max_followups` in its rubric), the node sets `followup_focus` and the graph goes back to `ask`.
@@ -376,7 +385,7 @@ There are two kinds of tables in the same Postgres database:
 | Tables | Owned by | Holds |
 | --- | --- | --- |
 | `interviews`, `documents`, `sessions` | us ([models.py](app/db/models.py), created by Alembic migrations) | what you created: interviews (with their language), document texts, the list of sessions, approved briefs |
-| `users`, `login_sessions` | us (migration 0005) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
+| `users`, `login_sessions` | us (migration 0005; migration 0006 adds `user_id` to interviews, documents and chunks) | accounts (email, Argon2 password hash, admin, disabled) and logins (the hash of each cookie's token, its expiry) |
 | `chunks`, `question_bank` | us (migration 0004) | the searchable pieces of your documents and the seeded questions, each with an embedding (`vector(1024)`) and an HNSW index for fast search |
 | `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations` | LangGraph (created by `saver.setup()`) | the full graph state after every step, per thread_id: questions, transcript, scores, feedback |
 
@@ -457,6 +466,7 @@ docker compose exec api pytest -q
 - that the interview's language reaches the prompts and both speech providers;
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
+- that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
 - that the technical types use the question bank and that system design allows 3 follow-ups;
 - accounts ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login, a wrong password and an unknown email look the same, the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused, and only hashes are stored.
@@ -594,7 +604,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 3. File uploads (PDF, Word, .eml), pgvector search per question, question bank, technical backend and system design types | built; tested offline (fake embedder) and with real Voyage (question bank, document search). The trace check is yours to run |
 | 4. Evals in LangSmith | planned |
 | 4.5. Cost control: a $10 / month budget, per-session limits, spend recorded per call | planned (after 4.6, so it can count per user) |
-| 4.6. Accounts: email, password and an invite code; each user sees only their own data | step 1 built (login, logout, accounts by script, login screen, CLI login; tested); next: each user sees only their own data |
+| 4.6. Accounts: email, password and an invite code; each user sees only their own data | steps 1-2 built and tested: login, logout, accounts by script, login screen, CLI login; each user sees only their own data. Next: invite codes and registration |
 | 5. AWS with Terraform | planned |
 | 6. Streaming, live turn detection, personas and more | planned |
 

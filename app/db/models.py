@@ -4,17 +4,21 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 (`Interview(company=...)`, `db.get(Interview, some_id)`) and SQLAlchemy writes the SQL.
 
 - Interview: one upcoming interview (company, role, mode, language) and, once you approve it,
-  its brief.
-- Document: a text attached to an interview (job post, email, notes). Your CV has no
-  interview_id, so it is shared by all interviews.
+  its brief. It belongs to one user (user_id).
+- Document: a text attached to an interview (job post, email, notes). A CV has no
+  interview_id, so it is shared by all the interviews of its user (user_id).
 - Chunk: a small piece of a document with its embedding (a vector column from pgvector), used
-  to find the passages that match a question. interview_id is copied from the document.
+  to find the passages that match a question. interview_id and user_id are copied from the
+  document, so a search can filter on them without a join.
 - QuestionBankItem: a seeded technical / system design question, with its embedding.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
   in LangGraph's checkpoint tables, under the session's thread_id.
 - User: one account (email + password hash). LoginSession: one logged-in browser or CLI run; its
   token lives in a cookie and only a hash of it is stored here (app/auth/ uses both).
   Not to be confused with Session above, which is a practice run.
+
+Who owns what: interviews, documents and chunks have a user_id; sessions belong to their
+interview. app/auth/ownership.py checks it on every request (someone else's row answers 404).
 
 Editing a class does not change the database by itself: also add a migration in migrations/versions/.
 """
@@ -38,6 +42,7 @@ class Interview(Base):
     __tablename__ = "interviews"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     company: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(200))
     interview_date: Mapped[date | None] = mapped_column(Date)
@@ -52,11 +57,12 @@ class Interview(Base):
 
 
 class Document(Base):
-    """An uploaded file or pasted text. interview_id is null for the shared CV."""
+    """An uploaded file or pasted text. interview_id is null for a CV (shared by its user's interviews)."""
 
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     interview_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("interviews.id", ondelete="CASCADE"), index=True
     )
@@ -78,6 +84,7 @@ class Chunk(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     interview_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # copied from the document
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)  # same
     chunk_index: Mapped[int]  # position in the document: 0, 1, 2...
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(1024))

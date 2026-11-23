@@ -62,7 +62,7 @@ One FastAPI service in Docker Compose runs the three steps. Postgres keeps the i
 
 Each practice session belongs to an **Interview**: company, role, date, interviewer names, plus the documents I attach to it.
 
-1. **Upload:** PDF, DOCX, `.eml` emails or pasted text (recruiter email, job post, notes from a call). Each file is parsed, split into chunks, embedded with Voyage and stored in pgvector, tagged with `interview_id`, `doc_type` and `source`. Each user's CV is stored once and shared by all of that user's interviews (Phase 4.6 adds accounts; until then there is one CV for everyone).
+1. **Upload:** PDF, DOCX, `.eml` emails or pasted text (recruiter email, job post, notes from a call). Each file is parsed, split into chunks, embedded with Voyage and stored in pgvector, tagged with `user_id`, `interview_id`, `doc_type` and `source`. Each user's CV is stored once and shared by all of that user's interviews.
 2. **Brief, which I review:** Claude Sonnet reads all the documents and writes a structured Interview Brief (Pydantic model):
     - company summary and what the role requires
     - likely interview format, and who the interviewers are
@@ -129,7 +129,7 @@ Before the public URL, people can only use the app with an account, and they can
 | Forgotten password | `reset_password.py` prints a temporary password I send to the person | No email provider needed for a few known users |
 | Leaving | "Delete my account" removes interviews, documents, chunks, sessions and their LangGraph checkpoints (by `thread_id`, as they have no foreign key) | Their personal data must be removable |
 
-**Existing data:** the migration adds the `user_id` columns as optional, a script creates my admin account and gives it every existing row, then a second migration makes `user_id` required.
+**Existing data:** one migration (0006) adds the `user_id` columns as optional, gives every existing row to the oldest admin account (or the oldest account), then makes `user_id` required. With data but no account, it stops and says to create the account first (`docker compose run --rm api python scripts/create_user.py ... --admin`).
 
 ## Cost control
 
@@ -236,7 +236,7 @@ Built after Phase 4.6, so that spending and limits can be counted per user.
 Details in [Accounts and access](#accounts-and-access). Each step ends with its own check.
 
 - [x] **Users and login:** `users` and `login_sessions` tables, Argon2 hashing, the login cookie, `/auth/login`, `/auth/logout`, `/auth/me`, a script that creates my admin account (`scripts/create_user.py`). Also built now, so nothing breaks while routes need a login: the login screen on the web page (registration comes in step 3) and the CLI login. Check: I log in and out, and the API answers 401 without the cookie.
-- [ ] **Ownership:** `user_id` on interviews, documents and chunks; existing rows given to me; `current_user` and ownership helpers on every route; the CV search filtered by user. Check: a second test account gets 404 on my interview, sessions and CV, and my CV never appears in its search results.
+- [x] **Ownership:** `user_id` on interviews, documents and chunks; existing rows given to me; `current_user` and ownership helpers on every route; the CV search filtered by user. Check: a second test account gets 404 on my interview, sessions and CV, and my CV never appears in its search results.
 - [ ] **Invites and registration:** `invites` table, `create_invite.py`, `/auth/register`, a registration screen on the web page (same palette and fonts), reached from a "Create an account" link on the login screen. Check: a one-use code works once, then is refused with a clear message.
 - [ ] **Hardening:** login and registration limits, the `Origin` check, "Delete my account", the admin scripts (list, disable, reset password), a short privacy note at registration. Check: the 6th wrong password is blocked, and no row of a deleted user remains (checkpoints included).
 - [ ] Tests for each step (a logged-in client fixture for the existing tests; isolation between two users); HOW_IT_WORKS.md and README updated.

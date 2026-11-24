@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     codes_per_ip: int = 10
     login_max_failures: int = 5
     login_max_failures_per_ip: int = 20
+    # Sign in with Google (app/auth/google.py): the OAuth client id from Google Cloud Console.
+    # Empty = no "Continue with Google" button.
+    google_client_id: str = ""
     # Email (app/mail/): "console" prints each email in the server logs (local use).
     mail_provider: str = "console"
     mail_from: str = "Interview Practice <no-reply@localhost>"

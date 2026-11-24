@@ -93,7 +93,8 @@ def login() -> None:
     if password:  # admins only
         resp = _post_json("/auth/password-login", {"email": email, "password": password})
     else:
-        print(json.loads(_post_json("/auth/start", {"email": email}).read())["detail"])
+        # use_code: always a code here, even for an admin (the page would ask an admin's password)
+        print(json.loads(_post_json("/auth/start", {"email": email, "use_code": True}).read())["detail"])
         code = input("Code from the email: ")
         resp = _post_json("/auth/verify", {"email": email, "code": code})
     with resp:

@@ -33,8 +33,14 @@ How it works:
   (score -> comment, a stronger answer, and your own answer from the transcript).
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
-- Spend (header): GET /usage after logging in and after each interview: "This month: $0.42"
-  and what's left for you; an admin sees the month's budget instead, in a warning color from 80%.
+- Header: GET /usage after logging in and after each interview: what's left for you ("Practice
+  + 2 interviews left"; no money is shown to users); an admin sees the month's budget instead,
+  in a warning color from 80%. The logo (top left) starts a new interview, like "New interview".
+- Login: one email field. "Continue" (POST /auth/start) answers "code" (the code screen) or,
+  for an admin with a password, "password" (the password screen; "Send me a code instead" asks
+  again with use_code). "Continue with Google" is Google's own button (Google Identity Services,
+  loaded from accounts.google.com only when GET /auth/config has a client id); Google hands
+  back an ID token, which POST /auth/google checks.
 - Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
   questions); the header says "Practice" during it. Once the practice and interviews are used, the
   setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
@@ -113,7 +119,7 @@ async function api(method, path, body, isForm = false) {
   const res = await fetch(path, options);
   // 401 = not logged in (any more): show the login screen. A wrong code on the login form is
   // also a 401, but that one is shown as a normal error.
-  if (res.status === 401 && path !== "/auth/verify" && path !== "/auth/password-login") {
+  if (res.status === 401 && !["/auth/verify", "/auth/password-login", "/auth/google"].includes(path)) {
     showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
     const err = new Error("Please log in.");
     err.status = 401;
@@ -603,6 +609,20 @@ $("setup-form").addEventListener("submit", (e) => {
       render(view);
     });
   }
+  // Only the number of questions or the length changed: the brief doesn't depend on them, so
+  // a new session starts at the same brief at once (no call to Claude).
+  if (state.editing && !editingChanged(["questions", "duration"])) {
+    const { interviewId } = state.editing;
+    return run("Back to your brief...", async () => {
+      const view = await api("POST", `/interviews/${interviewId}/sessions`, {
+        num_questions: Number(f.get("questions")) || null, duration_min: Number(f.get("duration")) || null,
+        review_brief: true,
+      });
+      state.editing = null;
+      clearDraft();
+      render(view);
+    });
+  }
   const alreadyAdded = state.editing ? $("existing-docs").children.length : 0;
   if (!job && !notes && !links.length && !files.length && !cv && !hasCvFile && !state.storedCv.length && !alreadyAdded) {
     return showError("Add at least one thing to read: the job post, a link, notes, a file or your CV.");
@@ -655,7 +675,7 @@ $("setup-form").addEventListener("submit", (e) => {
         failed.push(err.message);
       }
     }
-    if (links.length) { $("setup-form").elements.links.value = ""; $("setup-form").elements.job_link.value = ""; }
+    clearSentInputs();
 
     const questions = Number(f.get("questions")) || null;
     const view = await api("POST", `/interviews/${interview.id}/sessions`,
@@ -849,12 +869,14 @@ function clearDraft() { remember("setupDraft", null); }
 
 // After going back from a brief: has anything the brief depends on changed since?
 // Nothing changed -> "Back to my brief" keeps the same brief instead of writing a new one.
-function editingChanged() {
+// `ignore` leaves fields out of the check (questions and duration don't change the brief itself).
+function editingChanged(ignore = []) {
   const ed = state.editing;
   if (!ed) return true;
   const f = $("setup-form").elements;
   if (ed.changed) return true; // a document or CV was removed
-  if (["company", "role", "mode", "language", "questions", "duration"].some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
+  const fields = ["company", "role", "mode", "language", "questions", "duration"].filter((n) => !ignore.includes(n));
+  if (fields.some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
   for (const docType of ["job_post", "notes"]) {
     if (f[docType].value.trim() !== ((ed.pasted[docType] && ed.pasted[docType].text) || "").trim()) return true;
   }
@@ -864,9 +886,9 @@ function editingChanged() {
 }
 
 function updateSubmitLabel() {
-  $("wizard-submit").textContent = state.editing && !editingChanged()
-    ? (state.editing.returnTo === "interview" ? "Back to my interview ›" : "Back to my brief ›")
-    : "Prepare my interview brief ›";
+  $("wizard-submit").textContent = !state.editing || editingChanged(["questions", "duration"])
+    ? "Prepare my interview brief ›"
+    : !editingChanged() && state.editing.returnTo === "interview" ? "Back to my interview ›" : "Back to my brief ›";
 }
 
 $("setup-form").addEventListener("input", (e) => { if (e.target.type !== "file") saveDraft(); updateSubmitLabel(); });
@@ -901,6 +923,19 @@ function showSetup(step) {
   showPanel("setup");
   goStep(step, false);
   loadStoredCv();
+}
+
+// Files chosen and a pasted CV are sent once: after that they are stored documents (listed as
+// "already added"), so the form forgets them. Otherwise, going back from the brief would see
+// them as new and write the brief again (and add them twice).
+function clearSentInputs() {
+  const f = $("setup-form").elements;
+  $("files-input").value = "";
+  $("cv-file-input").value = "";
+  $("file-chips").replaceChildren();
+  f.cv.value = "";
+  f.links.value = "";
+  f.job_link.value = "";
 }
 
 // A brand-new interview: empty form, no session.
@@ -943,6 +978,7 @@ function editSetup(view, returnTo) {
         f[d.doc_type].value = d.text || "";
       }
     }
+    clearSentInputs(); // in case anything was left from before (e.g. a reload)
     renderExistingDocs(iv.documents.filter((d) => !pasted[d.doc_type] || pasted[d.doc_type].id !== d.id));
     state.editing = {
       interviewId: iv.id, sessionId: view.session_id, returnTo, pasted, changed: false,
@@ -983,13 +1019,17 @@ $("back-to-brief").addEventListener("click", () => {
   run("Loading the brief...", async () => render(await api("GET", `/sessions/${sessionId}`)));
 });
 
-// Leave the current interview for a new one. An unfinished one stays saved under its id.
-$("leave").addEventListener("click", () => {
+// Leave the current interview for a new one ("New interview", or a click on the logo). An
+// unfinished one stays saved under its id. Logged out, the logo just stays on the login screen.
+function leaveForNewInterview() {
+  if (!$("panel-login").hidden) return;
   const unfinished = state.view && state.view.status !== "done";
   if (unfinished && !confirm(
     `Leave this interview? It stays saved: continue it later with the session id\n${state.sessionId}`)) return;
   goToSetup();
-});
+}
+$("leave").addEventListener("click", leaveForNewInterview);
+$("home").addEventListener("click", (e) => { e.preventDefault(); leaveForNewInterview(); });
 
 // Light / dark: the button shows the theme you would switch to. Until you click it, the page
 // follows the system setting; your choice is then remembered in this browser.
@@ -1007,6 +1047,7 @@ $("theme").addEventListener("click", () => {
   document.documentElement.dataset.theme = next;
   remember("theme", next);
   updateThemeButton();
+  if (!$("panel-login").hidden && !$("login-form").hidden) showGoogleButton(); // redraw in the new colors
 });
 updateThemeButton();
 
@@ -1035,12 +1076,21 @@ function showLogin(message = "", form = "login") {
   $("code-form").hidden = form !== "code";
   $("password-form").hidden = form !== "password";
   showError(message);
-  ({ code: $("login-code"), password: $("password-email") }[form] || $("login-email")).focus();
+  ({ code: $("login-code"), password: $("password-input") }[form] || $("login-email")).focus();
+  if (form === "login") showGoogleButton();
 }
 
-async function sendLoginCode() {
+// "Continue": the server says whether to ask for a code (everyone) or a password (an admin who
+// has one). useCode = true always sends a code ("Send me a code instead", "Send a new code").
+async function continueWithEmail(useCode = false) {
   const email = $("login-email").value.trim();
-  await api("POST", "/auth/start", { email });
+  const reply = await api("POST", "/auth/start", { email, use_code: useCode });
+  if (reply.method === "password") {
+    $("password-email").value = email;
+    $("password-for").textContent = email;
+    $("password-input").value = "";
+    return showLogin("", "password");
+  }
   $("code-email").textContent = email;
   $("login-code").value = "";
   showLogin("", "code");
@@ -1048,16 +1098,55 @@ async function sendLoginCode() {
 
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  run("Sending your code...", sendLoginCode);
+  run("One moment...", () => continueWithEmail());
 });
-$("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", sendLoginCode); });
+$("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", () => continueWithEmail(true)); });
 $("other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
-$("to-password").addEventListener("click", (e) => {
-  e.preventDefault();
-  $("password-email").value = $("login-email").value;
-  showLogin("", "password");
-});
-$("to-code").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+$("password-other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+$("to-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending your code...", () => continueWithEmail(true)); });
+
+// "Continue with Google". The server's GET /auth/config gives the app's Google client id (none:
+// no button). Google's script draws its own button; picking an account calls back with an ID
+// token (a signed note from Google: who you are, for this app), which POST /auth/google checks.
+const googleLogin = { clientId: undefined, ready: null }; // not "google": Google's script owns that global name
+function loadGoogle() {
+  if (googleLogin.ready) return googleLogin.ready;
+  googleLogin.ready = (async () => {
+    const config = await api("GET", "/auth/config");
+    googleLogin.clientId = config.google_client_id;
+    if (!googleLogin.clientId) return false;
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Google sign-in could not load."));
+      document.head.append(script);
+    });
+    window.google.accounts.id.initialize({
+      client_id: googleLogin.clientId,
+      callback: (reply) => run("Logging in...", async () => {
+        const user = await api("POST", "/auth/google", { credential: reply.credential });
+        setAccount(user);
+        showError("");
+        await startApp();
+      }),
+    });
+    return true;
+  })().catch(() => { googleLogin.ready = null; return false; }); // try again next time the screen shows
+  return googleLogin.ready;
+}
+async function showGoogleButton() {
+  if (!(await loadGoogle())) return;
+  const box = $("google-button");
+  box.replaceChildren();
+  window.google.accounts.id.renderButton(box, {
+    theme: currentTheme() === "dark" ? "filled_black" : "outline",
+    size: "large", shape: "pill", text: "continue_with", logo_alignment: "center",
+    width: Math.min(400, box.clientWidth || 320),
+  });
+  $("google-box").hidden = false;
+}
 
 $("password-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -1071,7 +1160,7 @@ $("password-form").addEventListener("submit", (e) => {
   });
 });
 
-// The month's spend in the header, and the recording limit. Failing to load it is not an error.
+// The header's "what's left" (or, for an admin, the month's budget), and the recording limit. Failing to load it is not an error.
 const dollars = (x) => `$${x.toFixed(2)}`;
 async function loadUsage() {
   try {
@@ -1084,10 +1173,11 @@ async function loadUsage() {
       box.classList.toggle("spend-warn", u.budget.warning);
       box.title = u.budget.budgets.map((b) => `${b.name}: ${dollars(b.spent)} of ${dollars(b.budget)}`).join("\n");
     } else {
-      const you = u.you;
-      const left = you.practice_left ? "practice next"
-        : `${you.interviews_left} interview${you.interviews_left === 1 ? "" : "s"} left`;
-      box.textContent = `This month: ${dollars(you.month_usd)} · ${left}`;
+      // a user: what's left, never money ("Practice + 2 interviews left", "No interviews left")
+      const you = u.you, n = you.interviews_left;
+      const interviews = n ? `${n} interview${n === 1 ? "" : "s"}` : "";
+      const parts = [you.practice_left ? "Practice" : "", interviews].filter(Boolean);
+      box.textContent = parts.length ? `${parts.join(" + ")} left` : "No interviews left";
       box.title = `Interviews today: ${you.interviews_today} of ${you.interviews_per_day}`;
     }
     box.hidden = false;

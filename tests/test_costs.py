@@ -238,11 +238,16 @@ def test_usage_endpoint(monkeypatch):
     with TestClient(app) as client:
         act_as(user)
         mine = client.get("/usage").json()
-        assert mine["you"]["month_usd"] == pytest.approx(0.25) and mine["budget"] is None
+        assert "month_usd" not in mine["you"] and mine["budget"] is None  # no money for users
+        assert mine["you"]["interviews_left"] is not None
         assert mine["limits"]["max_recording_seconds"] == get_settings().max_recording_seconds
 
         monkeypatch.setattr(get_settings(), "budget_monthly_usd", 0.9)
-        act_as(_user(is_admin=True))
-        admin = client.get("/usage").json()["budget"]
+        boss = _user(is_admin=True)
+        _add_usage(0.10, user_id=boss.id)
+        act_as(boss)
+        admin_view = client.get("/usage").json()
+        assert admin_view["you"]["month_usd"] == pytest.approx(0.10)
+        admin = admin_view["budget"]
         month = next(b for b in admin["budgets"] if b["name"] == "month")
-        assert month["spent"] == pytest.approx(0.75) and admin["warning"] and admin["exceeded"] == []
+        assert month["spent"] == pytest.approx(0.85) and admin["warning"] and admin["exceeded"] == []

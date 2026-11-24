@@ -299,6 +299,20 @@ Decided 2026-11-24. Everyone else keeps logging in with an emailed code; my admi
 
 **Check:** I set my password, log in with it, start more than 4 interviews in a day and ask for more than 3 brief revisions; a wrong password 6 times is blocked; a non-admin can't log in with a password.
 
+### Phase 4.9: Login and header polish
+
+Decided 2026-11-24, after using the page.
+
+- [x] **One email field:** "Continue" asks an admin with a password for it (`POST /auth/start` answers `method: "password"`, an accepted trade-off: it shows which emails are admins with a password), and sends a code to everyone else; "Send me a code instead" (`use_code`). The "Admin? Log in with a password" link and the "where your data goes" note are gone (the README keeps the privacy text).
+- [x] **Continue with Google:** Google Identity Services button, `POST /auth/google` checks the ID token with `google-auth`, `users.google_sub` (migration 0013), links an existing account with the same email. Needs `GOOGLE_CLIENT_ID`.
+- [x] **Header:** users see what's left ("Practice + 2 interviews left"), never money (`GET /usage` no longer sends their spend); the admin keeps the budget.
+- [x] **"Files from the company (optional)"** label on the setup form.
+- [x] **Instant return to a brief:** a brief waiting for review is stored as a draft and reused with no Claude call when only the number of questions or the length changed; files and a pasted CV are cleared from the form once sent, so they no longer look like changes.
+- [x] **Logo:** `web/brand/` (header logo for light and dark, app icon as favicon and on the login card); a click on it starts a new interview.
+- [x] Tests; HOW_IT_WORKS.md, README and CLAUDE.md updated.
+
+**Check:** I log in as admin and get the password field; a new email gets a code; Continue with Google signs up a new account; the header shows what's left; going back from a brief with nothing changed is instant; the logo works in light and dark and leads back to a new interview.
+
 ### Phase 5: AWS with Terraform (one EC2 server)
 
 Decided 2026-11-24: **EC2 t4g.micro in `eu-west-1` (Ireland)**, everything in Terraform, chosen for learning (VPC, subnets, security groups, IAM roles, EBS, AMIs, user data, Session Manager are the building blocks under ECS and most AWS work) and cost. The server runs the same Compose file as my laptop: the app, Postgres and Caddy (automatic HTTPS from Let's Encrypt).

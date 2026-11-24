@@ -10,6 +10,8 @@ style.css - the look of the web page (web/index.html).
     Teal     #14B8A6 (finish / success, strengths, good scores)
     Sun      #F5A524 (second accent: the second card of each setup step)
     Sky      #0EA5E9 (third accent: the first card of each setup step)
+  The Practiss logo (web/brand/) uses Indigo, Midnight and Coral; dark mode shows its light-text
+  version (.logo-light / .logo-dark).
   They are defined once as variables on :root and redefined for dark mode. The page follows the
   system's light or dark setting until you pick one with the theme button (top right), which
   sets data-theme="light" or "dark" on <html>.
@@ -20,7 +22,8 @@ style.css - the look of the web page (web/index.html).
   recording (talk), teal gradient = finish and get feedback (btn-success), white with an
   indigo outline on hover = secondary actions (btn-ghost).
 - Scores are colored the same everywhere: 1-2 coral (low), 3 indigo (mid), 4-5 teal (high).
-- The login screens (your email, then the code) are one narrow white card in the middle of the page (.auth-card).
+- The login screens (your email, then the code or an admin's password) are one narrow white card
+  in the middle of the page (.auth-card), with the app icon on top and Google's button below.
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
   interview (conversation | controls) and the feedback (overview | details) use two columns.
   On a phone everything stacks in one column.
@@ -176,6 +179,18 @@ h1, h2, h3, .btn, .step-no, .slide-no, .wizard-steps li, .score-big, .num, .crit
 main { padding-top: 16px; padding-bottom: 40px; }
 
 h1 { font-size: 1.5rem; margin: 0; color: var(--primary); }
+/* the logo, top left: a link back to a new interview; the dark version shows in dark mode */
+.brand { line-height: 0; }
+.brand a { display: inline-block; border-radius: 10px; }
+.brand a:focus-visible { outline: 3px solid var(--primary); outline-offset: 4px; }
+.brand img { height: clamp(32px, 4vw, 42px); width: auto; }
+.brand .logo-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand .logo-light { display: none; }
+  :root:not([data-theme="light"]) .brand .logo-dark { display: inline; }
+}
+:root[data-theme="dark"] .brand .logo-light { display: none; }
+:root[data-theme="dark"] .brand .logo-dark { display: inline; }
 h2 { font-size: 1.15rem; margin: 0 0 12px; }
 h3 { font-size: 1rem; margin: 0 0 8px; }
 
@@ -195,11 +210,11 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card > .hint { margin: 0 0 20px; }
 .auth-card .btn-large { margin-top: 6px; }
 .auth-card .auth-note { margin-top: 18px; text-align: center; }
-/* the month's spend in the header; Sun tint when a budget is at 80% or more */
+.auth-card .auth-icon { display: block; width: 56px; height: 56px; margin: 0 0 14px; }
+.auth-card .google-button { display: flex; justify-content: center; min-height: 44px; }
+/* what's left (a user) or the month's budget (an admin) in the header; Sun tint when a budget is at 80% or more */
 .spend { color: var(--muted); padding: 2px 10px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
 .spend.spend-warn { background: color-mix(in srgb, var(--sun) 22%, var(--card)); color: var(--text); }
-.auth-card .privacy-note { margin: 4px 0 16px; padding: 10px 12px; border-radius: 10px; background: var(--primary-soft); color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
-.auth-card .privacy-note strong { color: var(--text); }
 /* "Your account" box at the bottom of the setup page */
 .account-form + .account-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
 .account-form h3 { margin: 12px 0 8px; }

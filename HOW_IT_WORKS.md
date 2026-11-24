@@ -136,9 +136,12 @@ scripts/
 web/
   index.html           The web page: login, setup (3 steps + My CV), brief, interview, feedback
   app.js               Its logic: login, API calls, click-to-talk recording, audio playback, end / leave
-  style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark
+  style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark.
+                       It borrows the logo's shapes: rounded-square icon tiles, the coral dot after page titles,
+                       and the sound bars (on the record button and the floating "working" pill)
   brand/               The Practiss logo: logo-header.png (light) and logo-header-dark.png in the header,
-                       app-icon.png on the login card and as the browser-tab icon; logo-horizontal*.png
+                       app-icon.png on the login card, as the interviewer's avatar in the conversation and
+                       as the browser-tab icon; logo-horizontal*.png
                        and logo-stacked.png are the full logos with the tagline, kept for later use
 samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)

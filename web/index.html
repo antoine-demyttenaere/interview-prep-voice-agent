@@ -11,7 +11,9 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  401 (your login ended).
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
-                 your CV, then "Prepare my interview brief".
+                 your CV, then "Prepare my interview brief". Each step is two cards with an icon
+                 tile; files go in a drop zone (the invisible file input covers it); Questions
+                 has − / + buttons.
                  "Your CV" shows the stored CV with a Delete button; a folded box continues a session;
                  another, "Your account", deletes your account (confirmed by an emailed code).
                  Above the form, a note says when the next session is your practice (3 questions),
@@ -26,8 +28,8 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  and per question
 The Practiss logo (top left, images in web/brand/: one for light mode, one for dark) and "New
 interview" (top right) go back to an empty setup form at any time; the button next to it
-switches between light and dark colors. Your email and "Log out" sit next to them once you're
-logged in, with what you have left (GET /usage; an admin sees the month's budget instead, in Sun
+switches between light and dark colors. Your initial, your email and "Log out" sit in one white
+pill next to them once you're logged in, with what you have left (GET /usage; an admin sees the month's budget instead, in Sun
 from 80%).
 No build step and no framework: edit a file, reload the page.
 -->
@@ -59,9 +61,13 @@ No build step and no framework: edit a file, reload the page.
     <span class="top-right">
       <span id="session-label" class="muted small"></span>
       <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
-      <span id="spend" class="spend small" hidden></span>
-      <span id="account" class="muted small" hidden></span>
-      <button id="logout" type="button" class="btn btn-ghost btn-small" hidden>Log out</button>
+      <!-- Once logged in: what's left, your initial and email, and Log out, in one white pill -->
+      <span class="account-bar">
+        <span id="spend" class="spend small" hidden></span>
+        <span id="avatar" class="avatar" aria-hidden="true" hidden></span>
+        <span id="account" class="small" hidden></span>
+        <button id="logout" type="button" class="btn btn-ghost btn-small" hidden>Log out</button>
+      </span>
       <!-- Light / dark switch: the knob slides to the sun (light) or the moon (dark) -->
       <button id="theme" type="button" class="theme-switch" role="switch" aria-checked="false" aria-label="Dark mode">
         <span class="icon sun"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg></span><span class="icon moon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></span><span class="knob"></span>
@@ -71,7 +77,8 @@ No build step and no framework: edit a file, reload the page.
 
   <main>
     <p id="error" class="error" hidden></p>
-    <p id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text">Working...</span></p>
+    <!-- "Working" pill, floating at the top: the logo's sound bars move while the server works -->
+    <p id="busy" class="busy" role="status" hidden><span class="waves mini" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></span><span id="busy-text">Working...</span></p>
 
     <!-- 0. Log in or sign up with a code sent by email (app.js shows it when GET /auth/me answers 401) -->
     <section id="panel-login" hidden>
@@ -150,18 +157,22 @@ No build step and no framework: edit a file, reload the page.
         <!-- The three steps sit side by side on a rail; the rail slides so one step shows at a time -->
         <div class="wizard-track" id="wizard-track"><div class="wizard-rail" id="wizard-rail">
         <div class="step">
-          <h2><span class="step-no">1</span> The interview</h2>
-          <!-- Two cards: who the interview is with (white), how it will go (Sun) -->
+          <h2>The interview</h2>
+          <!-- Two cards: who the interview is with (Sky), how it will go (Sun); each has an icon tile -->
           <div class="card-grid">
             <section class="form-card">
-              <h3>Who</h3>
-              <p class="hint">The company and the job you are interviewing for.</p>
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 21V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v16M15 9h4a1 1 0 0 1 1 1v11M3 21h18M8 8h3M8 12h3M8 16h3"/></svg></span>
+                <div><h3>Who</h3><p class="hint">The company and the job you are interviewing for.</p></div>
+              </div>
               <label>Company <input name="company" required placeholder="Northwind Logistics"></label>
               <label>Role <input name="role" required placeholder="Senior Backend Engineer"></label>
             </section>
             <section class="form-card card-sun">
-              <h3>How</h3>
-              <p class="hint">The kind of interview, its language and its length.</p>
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span>
+                <div><h3>How</h3><p class="hint">The kind of interview, its language and its length.</p></div>
+              </div>
             <label>Interview type
               <select name="mode">
                 <option value="behavioral">Behavioral / HR</option>
@@ -178,7 +189,15 @@ No build step and no framework: edit a file, reload the page.
                 <option value="es">Español</option>
               </select>
             </label>
-            <label>Questions <input name="questions" type="number" min="1" max="8" value="5"></label>
+            <!-- Number of questions: the field with a − and a + button on each side (app.js) -->
+            <div class="field">
+              <label for="questions-input">Questions</label>
+              <div class="stepper">
+                <button type="button" class="step-btn" data-delta="-1" aria-label="One question fewer">−</button>
+                <input id="questions-input" name="questions" type="number" min="1" max="8" value="5">
+                <button type="button" class="step-btn" data-delta="1" aria-label="One more question">+</button>
+              </div>
+            </div>
             <label>Duration
               <select name="duration">
                 <option value="30">30 min</option>
@@ -193,27 +212,39 @@ No build step and no framework: edit a file, reload the page.
         </div>
 
         <div class="step">
-          <h2><span class="step-no">2</span> The company and the job</h2>
+          <h2>The company and the job</h2>
           <!-- Two cards: the job post (white), more about the company (Sun) -->
           <div class="card-grid">
             <section class="form-card fill">
-              <h3>The job post</h3>
-              <p class="hint">Give its link, or paste its whole text: the role, the team, what they ask for, the process.</p>
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/></svg></span>
+                <div><h3>The job post</h3><p class="hint">Give its link, or paste its whole text: the role, the team, what they ask for, the process.</p></div>
+              </div>
               <label>Link to the job post
-                <input name="job_link" type="text" inputmode="url" autocomplete="off" placeholder="https://company.com/careers/the-job">
+                <span class="with-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+                  <input name="job_link" type="text" inputmode="url" autocomplete="off" placeholder="https://company.com/careers/the-job">
+                </span>
                 <span class="hint">We read the page for you. LinkedIn usually needs a login: paste the text instead.</span></label>
               <div class="or"><span>or</span></div>
               <textarea name="job_post" rows="6" placeholder="Paste the job post here" aria-label="The job post text"></textarea>
             </section>
             <section class="form-card card-sun">
-              <h3>About the company</h3>
-              <p class="hint">All optional. Anything that helps prepare.</p>
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+                <div><h3>About the company</h3><p class="hint">All optional. Anything that helps prepare.</p></div>
+              </div>
               <label>Company pages <span class="hint">Its website, "about" or blog pages, one link per line.</span>
                 <textarea name="links" rows="2" placeholder="https://company.com/about"></textarea></label>
               <label>Emails and notes <span class="hint">From the recruiter, or your notes from a call.</span>
                 <textarea name="notes" rows="3" placeholder="Paste them here"></textarea></label>
-              <label>Files from the company (optional) <span class="hint">Anything the company sent you for this interview: PDF, Word, email (.eml) or text.</span>
-                <input type="file" name="files" id="files-input" multiple accept=".pdf,.docx,.eml,.txt,.md"></label>
+              <label>Files from the company <span class="hint">Anything the company sent you for this interview.</span>
+                <!-- A drop zone: the real file input covers it, invisible, so a click or a dropped file both work -->
+                <span class="dropzone">
+                  <input type="file" name="files" id="files-input" multiple accept=".pdf,.docx,.eml,.txt,.md">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+                  <span><strong>Choose files</strong> or drop them here<span class="hint">PDF, Word, email (.eml) or text</span></span>
+                </span></label>
               <ul id="file-chips" class="chips"></ul>
             </section>
           </div>
@@ -221,18 +252,27 @@ No build step and no framework: edit a file, reload the page.
         </div>
 
         <div class="step">
-          <h2><span class="step-no">3</span> Your CV</h2>
+          <h2>Your CV</h2>
           <!-- Two cards: the CV used today on the left, adding a new one on the right -->
           <div class="card-grid">
             <section class="form-card">
-              <h3>Your current CV</h3>
-              <p class="hint">Used for every interview. Delete it to stop using it.</p>
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg></span>
+                <div><h3>Your current CV</h3><p class="hint">Used for every interview. Delete it to stop using it.</p></div>
+              </div>
               <div id="my-cv" class="my-cv"></div>
             </section>
             <section class="form-card card-sun">
-              <h3>Add a new CV</h3>
-              <p class="hint">Upload the file, or paste its text.</p>
-              <input type="file" name="cv_file" id="cv-file-input" accept=".pdf,.docx,.txt,.md" aria-label="Upload a CV file (PDF, Word or text)">
+              <div class="card-head">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg></span>
+                <div><h3>Add a new CV</h3><p class="hint">Upload the file, or paste its text.</p></div>
+              </div>
+              <span class="dropzone">
+                <input type="file" name="cv_file" id="cv-file-input" accept=".pdf,.docx,.txt,.md" aria-label="Upload a CV file (PDF, Word or text)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+                <span><strong>Choose a file</strong> or drop it here<span class="hint">PDF, Word or text</span></span>
+              </span>
+              <ul id="cv-chips" class="chips"></ul>
               <div class="or"><span>or</span></div>
               <textarea name="cv" rows="3" placeholder="Paste your CV as text" aria-label="Paste your CV as text"></textarea>
               <label class="check" id="replace-cv-row" hidden>
@@ -278,24 +318,26 @@ No build step and no framework: edit a file, reload the page.
 
     <!-- 2. Brief review -->
     <section id="panel-brief" class="panel" hidden>
-      <div class="panel-head">
+      <div class="panel-head brief-head">
         <button id="brief-back" type="button" class="btn btn-ghost">‹ Back to my documents</button>
-        <h2>Your Interview Brief</h2>
-        <span class="muted small">Use the arrows (or ← →) to go through the cards</span>
+        <h2>Your interview brief</h2>
+        <span class="muted small">Move with the arrows or <kbd>←</kbd> <kbd>→</kbd></span>
       </div>
       <div id="brief"></div>
       <div class="center">
         <button id="approve" class="btn btn-wide btn-locked" aria-disabled="true">Approve and start the interview</button>
       </div>
       <p id="approve-hint" class="approve-hint"></p>
-      <div>
-      </div>
-      <!-- Always open: ask Claude to change something in the brief -->
+      <!-- Always open: ask Claude to change something in the brief (a pencil in a coral tile) -->
       <div class="ask-changes">
-        <h3>Something to change?</h3>
-        <p class="hint">Say what is wrong or missing, and the brief is written again.</p>
-        <textarea id="brief-feedback" rows="2" placeholder="e.g. The interviewer is the CTO, not the engineering manager"></textarea>
-        <button id="revise" class="btn btn-coral">Rewrite the brief</button>
+        <div class="card-head">
+          <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span>
+          <div><h3>Something to change?</h3><p class="hint">Say what is wrong or missing, and the brief is written again.</p></div>
+        </div>
+        <div class="ask-row">
+          <textarea id="brief-feedback" rows="2" placeholder="e.g. The interviewer is the CTO, not the engineering manager"></textarea>
+          <button id="revise" class="btn btn-coral">Rewrite the brief</button>
+        </div>
       </div>
     </section>
 
@@ -320,13 +362,18 @@ No build step and no framework: edit a file, reload the page.
             <p id="clock-note" class="clock-note" hidden>Time's up: wrap up with <strong>End interview and get feedback</strong>.</p>
           </div>
 
-          <label class="toggle"><input type="checkbox" id="voice-toggle" checked> Answer by voice</label>
+          <!-- A switch (a checkbox drawn as a sliding knob): off = type your answers -->
+          <label class="toggle"><input type="checkbox" id="voice-toggle" role="switch" checked> Answer by voice</label>
 
           <div id="voice-controls" class="controls">
-            <button id="talk" class="btn talk" type="button">Start answering</button>
+            <!-- The record button: sound bars like the logo's (they move while you record), then the label -->
+            <button id="talk" class="btn talk" type="button">
+              <span class="waves" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></span>
+              <span id="talk-label">Start answering</span>
+            </button>
             <span id="rec-timer" class="rec-timer" hidden>0:00 / 5:00</span>
             <p class="muted small">Click (or press <kbd>Space</kbd>) to start, again to send your answer.</p>
-            <button id="replay" type="button" class="btn btn-ghost">Replay the question</button>
+            <button id="replay" type="button" class="btn btn-ghost btn-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>Replay the question</button>
           </div>
 
           <form id="text-controls" class="controls" hidden>
@@ -354,7 +401,7 @@ No build step and no framework: edit a file, reload the page.
     <section id="panel-feedback" hidden>
       <div id="feedback" class="feedback-layout"></div>
       <div class="center">
-        <button id="new-interview" class="btn btn-primary">Practise again</button>
+        <button id="new-interview" class="btn btn-primary btn-cta">Practise again ›</button>
       </div>
     </section>
   </main>

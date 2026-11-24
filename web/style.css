@@ -22,6 +22,10 @@ style.css - the look of the web page (web/index.html).
   recording (talk), teal gradient = finish and get feedback (btn-success), white with an
   indigo outline on hover = secondary actions (btn-ghost).
 - Scores are colored the same everywhere: 1-2 coral (low), 3 indigo (mid), 4-5 teal (high).
+- Shapes borrowed from the logo: icons and numbers sit in rounded squares like the app icon
+  (.card-icon, .slide-icon, .file-tile, .num, step numbers); page titles end in a coral dot
+  (h2::after); the logo's sound bars (.waves) are on the record button and in the floating
+  "working" pill (.busy, bottom centre). Only buttons use gradients; everything else is solid.
 - The login screens (your email, then the code or an admin's password) are one narrow white card
   in the middle of the page (.auth-card), with the app icon on top and Google's button below.
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
@@ -213,7 +217,24 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card .auth-icon { display: block; width: 56px; height: 56px; margin: 0 0 14px; }
 .auth-card .google-button { display: flex; justify-content: center; min-height: 44px; }
 /* what's left (a user) or the month's budget (an admin) in the header; Sun tint when a budget is at 80% or more */
-.spend { color: var(--muted); padding: 2px 10px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
+.spend { color: var(--muted); padding: 4px 12px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
+/* Once logged in, the top right holds one white pill: what's left, your initial in an indigo
+   circle, your email, and Log out. It disappears when everything in it is hidden (logged out). */
+.account-bar {
+  display: flex; align-items: center; gap: 10px; padding: 4px 4px 4px 6px;
+  border-radius: 999px; background: var(--card); border: 1px solid var(--border);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--indigo) 8%, transparent);
+}
+.account-bar:not(:has(> :not([hidden]))) { display: none; }
+.account-bar [hidden] { display: none; }
+.account-bar .btn-ghost { box-shadow: none; }
+.avatar {
+  display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--primary); color: #fff;
+  font-family: var(--font-heading); font-weight: 700; font-size: 0.85rem; text-transform: uppercase;
+}
+#account { color: var(--text); font-weight: 500; }
+@media (max-width: 760px) { #account { display: none; } } /* the initial is enough on a phone */
 .spend.spend-warn { background: color-mix(in srgb, var(--sun) 22%, var(--card)); color: var(--text); }
 /* "Your account" box at the bottom of the setup page */
 .account-form + .account-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
@@ -245,9 +266,10 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .card-sun .check { margin: 12px 0 0; }
 .form-card.fill { display: flex; flex-direction: column; }
 .form-card.fill textarea { flex: 1; min-height: 12em; }
-.my-cv .empty { padding: 14px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); text-align: center; }
+.my-cv .empty { margin: 0; padding: 22px 14px; border: 2px dashed color-mix(in srgb, var(--sky) 35%, var(--border)); border-radius: 14px; color: var(--muted); text-align: center; }
 /* "or" between uploading and pasting: a line with the word in the middle */
 .or { display: flex; align-items: center; gap: 12px; margin: 12px 0; color: var(--muted); font-size: 0.9rem; }
+.or span { padding: 1px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); font-family: var(--font-heading); font-weight: 600; font-size: 0.8rem; }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 
 /* two columns on a wide screen, one on a phone */
@@ -301,6 +323,7 @@ input:focus, select:focus, textarea:focus {
 .inline input { margin-top: 0; }
 .check { display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .check input { width: auto; margin: 0; }
+.check[hidden] { display: none; } /* display: flex would otherwise beat `hidden` */
 
 /* ---------- buttons ---------- */
 
@@ -335,22 +358,34 @@ input:focus, select:focus, textarea:focus {
 .btn-danger { background: transparent; color: var(--record); border-color: color-mix(in srgb, var(--record) 60%, transparent); }
 .btn-danger:hover:not(:disabled) { background: var(--record-soft); }
 .btn-small { padding: 6px 14px; font-size: 0.85rem; }
+.btn-cta { min-width: 220px; padding: 14px 34px; font-size: 1.12rem; } /* the last big step: "Practise again" */
 .btn-large { padding: 14px 30px; font-size: 1.1rem; width: 100%; }
 
 /* ---------- messages ---------- */
 
 /* Pinned at the top of the window, so they are seen even when scrolled down. */
-.error, .busy { position: sticky; top: 8px; z-index: 10; margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; }
+.error { position: sticky; top: 8px; z-index: 10; margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; }
 .error { background: var(--error-bg); color: var(--error-text); }
-.busy { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--primary); }
-.busy[hidden], .error[hidden] { display: none; }
-.spinner {
-  width: 16px; height: 16px; flex: none;
-  border: 2px solid var(--border); border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+/* "Working" (Listening and thinking..., Preparing your brief...): a white pill floating at the
+   bottom centre of the window, over the page (so nothing moves, and the header stays clear), with
+   the logo's sound bars moving in indigo. */
+.busy {
+  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); z-index: 20;
+  display: flex; align-items: center; gap: 12px; margin: 0; padding: 10px 22px 10px 16px;
+  border-radius: 999px; background: var(--card); border: 1px solid var(--border);
+  font-family: var(--font-heading); font-weight: 600; white-space: nowrap;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--indigo) 22%, transparent);
+  animation: drop-in 0.25s ease-out;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes drop-in { from { opacity: 0; transform: translate(-50%, 10px); } }
+.busy[hidden], .error[hidden] { display: none; }
+.waves.mini { height: 20px; gap: 3px; }
+.waves.mini i { width: 3px; background: var(--primary); animation: level 0.9s ease-in-out infinite; }
+.waves.mini i:nth-child(1) { height: 9px; }
+.waves.mini i:nth-child(2) { height: 18px; animation-delay: 0.15s; }
+.waves.mini i:nth-child(3) { height: 13px; animation-delay: 0.3s; }
+.waves.mini i:nth-child(4) { height: 7px; animation-delay: 0.45s; }
+.waves.mini b { width: 6px; height: 6px; background: var(--coral); }
 
 /* ---------- setup ---------- */
 
@@ -358,18 +393,37 @@ input:focus, select:focus, textarea:focus {
    Next / Back (or a swipe, or a click on the step bar) scrolls it to the next step. */
 .wizard { display: flex; flex-direction: column; gap: 14px; }
 .wizard-steps { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 0; padding: 0; }
-.wizard-steps { gap: 12px; }
+/* The step bar: three pills joined by a short line. The number sits in a rounded square, like
+   the app icon. The current step is solid indigo; a step already done shows a tick, and the line
+   after it turns indigo, so the bar fills up as you go. */
+.wizard-steps { gap: 0; align-items: center; }
 .wizard-steps li {
+  position: relative;
   flex: none; display: flex; align-items: center; gap: 10px;
-  padding: 9px 22px 9px 10px; border-radius: 999px; border: 1px solid var(--border);
+  padding: 7px 20px 7px 7px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--card);
-  color: var(--muted); font-weight: 600; font-size: 1.08rem; cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  color: var(--muted); font-weight: 600; font-size: 1.02rem; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
-.wizard-steps li .step-no { width: 32px; height: 32px; margin: 0; font-size: 0.95rem; background: var(--border); color: var(--text); }
+.wizard-steps li + li { margin-left: 44px; }
+.wizard-steps li + li::before { /* the line between two pills */
+  content: ""; position: absolute; left: -38px; top: 50%; width: 32px; height: 3px; margin-top: -1.5px;
+  border-radius: 3px; background: var(--border); transition: background 0.2s;
+}
+.wizard-steps li.done + li::before { background: var(--primary); }
+.wizard-steps li .step-no { width: 32px; height: 32px; margin: 0; font-size: 0.95rem; border-radius: 10px; background: var(--primary-soft); color: var(--primary); }
 .wizard-steps li:hover { border-color: var(--primary); color: var(--text); }
-.wizard-steps li.active { border-color: var(--primary); background: var(--primary-soft); color: var(--text); }
-.wizard-steps li.active .step-no, .wizard-steps li.done .step-no { background: var(--primary); color: var(--on-color); }
+.wizard-steps li.active {
+  border-color: transparent; background: var(--primary); color: var(--on-color);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--primary) 35%, transparent);
+}
+.wizard-steps li.active .step-no { background: var(--on-color); color: var(--primary); }
+.wizard-steps li.done { color: var(--text); }
+.wizard-steps li.done .step-no { background: var(--primary); color: transparent; position: relative; }
+.wizard-steps li.done .step-no::after { /* a tick in place of the number */
+  content: ""; position: absolute; left: 11px; top: 7px; width: 7px; height: 13px;
+  border: solid var(--on-color); border-width: 0 3px 3px 0; transform: rotate(45deg);
+}
 /* The track is a window that clips; the rail inside it holds the three steps side by side and
    slides (transform) so exactly one step shows. Steps off screen are made `inert` by app.js, so
    Tab or a click can never pull a half-hidden field into view and shift the steps. */
@@ -379,9 +433,79 @@ input:focus, select:focus, textarea:focus {
 }
 .wizard-rail { display: flex; align-items: flex-start; transition: transform 0.35s ease; }
 .wizard-rail > .step { flex: 0 0 100%; min-width: 0; padding: 4px 6px 2px; }
-/* Step titles ("The interview", "The company and the job", "Your CV"): large, with a bigger badge */
-.wizard-track .step h2 { display: flex; align-items: center; gap: 10px; font-size: 1.35rem; margin: 2px 0 14px; }
-.wizard-track .step h2 .step-no { width: 30px; height: 30px; margin: 0; font-size: 0.95rem; }
+/* Step titles ("The interview", "The company and the job", "Your CV"): large and bold, ending in a
+   coral dot, like the dot in the logo's speech bubble (the step bar already gives the number). */
+.wizard-track .step h2 { font-size: 1.6rem; font-weight: 700; margin: 6px 0 16px; }
+.wizard-track .step h2::after {
+  content: ""; display: inline-block; width: 0.26em; height: 0.26em; margin-left: 0.12em;
+  border-radius: 50%; background: var(--coral);
+}
+
+/* The top of each setup card: an icon in a rounded square (Sky on the first card, Sun on the
+   second, the shape of the app icon), then the card's title and its hint. */
+.card-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.card-head h3 { margin: 0; }
+.card-head .hint { margin: 1px 0 0; }
+.card-icon {
+  flex: none; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px;
+  background: var(--sky); color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--sky) 30%, transparent);
+}
+.card-sun .card-icon { background: var(--sun); box-shadow: 0 4px 12px color-mix(in srgb, var(--sun) 30%, transparent); }
+.card-icon svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* A field with an indigo icon inside, on the left (the link to the job post) */
+.with-icon { position: relative; display: block; }
+.with-icon svg {
+  position: absolute; left: 14px; top: 50%; width: 20px; height: 20px; margin-top: -7px; pointer-events: none;
+  fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.with-icon input { padding-left: 44px; }
+
+/* Drop zone for files: a dashed box with an upload icon. The real file input covers the whole box,
+   invisible, so a click opens the file picker and a file dropped on it is taken as chosen.
+   app.js adds .over while a file is dragged above it. */
+.dropzone {
+  position: relative; display: flex; align-items: center; gap: 14px; margin-top: 6px; padding: 14px 16px;
+  border: 2px dashed color-mix(in srgb, var(--primary) 30%, var(--border)); border-radius: 14px;
+  background: var(--field); font-weight: 400; transition: border-color 0.15s, background 0.15s;
+}
+.dropzone input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.dropzone svg {
+  flex: none; width: 42px; height: 42px; padding: 9px; border-radius: 12px; background: var(--primary-soft);
+  fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.dropzone strong { color: var(--primary); }
+.dropzone .hint { font-size: 0.85rem; }
+.dropzone:hover, .dropzone.over { border-color: var(--primary); background: var(--primary-soft); }
+.dropzone:has(input:focus-visible) { border-color: var(--primary); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 18%, transparent); }
+/* the chosen files, under the drop zone: one pill each, with a small indigo square */
+.chips li { padding: 4px 12px; border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent); color: var(--text); font-weight: 500; }
+.chips li::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 2px; background: var(--primary); vertical-align: 1px; }
+
+/* "Questions": a number between a − and a + button (indigo circles, like the dropdown arrows) */
+.field { margin: 0 0 14px; }
+.field > label { margin: 0; }
+.stepper {
+  display: flex; align-items: center; margin-top: 6px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--field);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.stepper:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.stepper:focus-within { border-color: var(--primary); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 18%, transparent); }
+.stepper input {
+  flex: 1; min-width: 0; margin: 0; padding: 12px 4px; border: 0; background: transparent; box-shadow: none;
+  text-align: center; font-family: var(--font-heading); font-weight: 600; -moz-appearance: textfield;
+}
+.stepper input:focus { box-shadow: none; background: transparent; }
+.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.step-btn {
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0 0 2px;
+  border: 0; border-radius: 50%; background: #5b54e8; color: #fff; /* same indigo as the select arrow */
+  font: 700 1.1rem/1 var(--font-heading); cursor: pointer; transition: transform 0.12s, filter 0.15s;
+}
+.step-btn:hover { filter: brightness(1.12); transform: scale(1.08); }
+.step-btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 40%, transparent); outline-offset: 2px; }
 
 /* Back / Next bar: "sticky" pins it to the bottom of the window whenever the form is taller than
    the screen, so the buttons are always visible without scrolling. On a large screen it simply
@@ -412,13 +536,12 @@ input:focus, select:focus, textarea:focus {
 .quota-empty .inline input { flex: 1 1 260px; }
 .existing-docs:empty { display: none; }
 .existing-docs { margin-top: 12px; }
-.existing-docs .stored {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px 12px; margin-bottom: 6px;
-  border: 1px solid var(--border); border-radius: 9px; background: var(--primary-soft);
-}
 @media (max-width: 640px) {
-  .wizard-steps li { font-size: 0.8rem; padding: 8px; }
+  .wizard-steps li { font-size: 0.8rem; padding: 5px 10px 5px 5px; gap: 6px; }
+  .wizard-steps li .step-no { width: 26px; height: 26px; border-radius: 8px; }
+  .wizard-steps li.done .step-no::after { left: 8px; top: 4px; }
+  .wizard-steps li + li { margin-left: 16px; }
+  .wizard-steps li + li::before { left: -14px; width: 12px; }
   .wizard-nav .btn { min-width: 0; padding: 12px 18px; font-size: 1rem; }
   .wizard-nav p { display: none; } /* the hint needs room the phone does not have */
   .wizard-track .step h2 { font-size: 1.25rem; }
@@ -426,19 +549,32 @@ input:focus, select:focus, textarea:focus {
 .step-no {
   display: inline-grid; place-items: center;
   width: 26px; height: 26px; margin-right: 6px;
-  border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff;
+  border-radius: 50%; background: var(--primary); color: #fff;
   font-size: 0.85rem;
 }
 .submit-step { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
 .submit-step p { margin: 0; }
-.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 0; padding: 0; }
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; }
+.chips:empty { display: none; }
 .chips li { padding: 3px 10px; border-radius: 999px; background: var(--primary-soft); font-size: 0.85rem; }
 .my-cv { margin-bottom: 12px; }
-.my-cv .stored {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px 12px; margin-bottom: 6px;
-  border: 1px solid var(--border); border-radius: 9px; background: var(--primary-soft);
+/* A stored document (your CV, or a company document already added): a white row with a tile
+   showing its file type (PDF, DOCX...) in an indigo rounded square, its name and a note, and Delete. */
+.stored {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; margin-bottom: 8px;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--field);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--indigo) 6%, transparent);
 }
+.file-tile {
+  flex: none; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px;
+  background: var(--primary); color: var(--on-color);
+  font-family: var(--font-heading); font-weight: 700; font-size: 0.66rem; letter-spacing: 0.04em;
+}
+.stored-name { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.stored-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* checkboxes in the palette's indigo */
+input[type="checkbox"] { accent-color: var(--primary); width: 18px; height: 18px; }
 .resume summary { cursor: pointer; color: var(--muted); }
 
 /* ---------- brief ---------- */
@@ -452,15 +588,26 @@ input:focus, select:focus, textarea:focus {
 .card.accent { border-left-color: var(--primary); background: var(--primary-soft); }
 .card.warn { border-left-color: var(--warn); background: var(--warn-soft); }
 details.card summary { cursor: pointer; font-weight: 600; }
-/* "Something to change?": always open, in a coral tint so it is easy to spot */
-.ask-changes {
-  margin-top: 18px; padding: 16px 20px; border-radius: 14px;
-  background: var(--record-soft); border: 1px solid color-mix(in srgb, var(--coral) 45%, transparent);
-  border-left: 6px solid var(--coral);
+/* The brief's header: Back on the left, the title (with the coral dot, like the setup steps) in
+   the middle, the keyboard hint on the right. */
+.brief-head h2 { font-size: 1.5rem; font-weight: 700; }
+.brief-head h2::after {
+  content: ""; display: inline-block; width: 0.26em; height: 0.26em; margin-left: 0.12em;
+  border-radius: 50%; background: var(--coral);
 }
-.ask-changes h3 { margin: 0; font-size: 1.1rem; color: var(--warn); }
-.ask-changes .hint { margin: 2px 0 10px; }
-.ask-changes textarea { margin: 0 0 10px; background: var(--field); }
+
+/* "Something to change?": always open, a light coral card with a pencil in a coral tile; the
+   text box and its button sit side by side on a wide screen */
+.ask-changes {
+  margin-top: 22px; padding: 18px 20px; border-radius: 16px;
+  background: var(--record-soft); border: 1px solid color-mix(in srgb, var(--coral) 30%, transparent);
+}
+.ask-changes h3 { margin: 0; font-size: 1.1rem; }
+.ask-changes .card-head { margin-bottom: 12px; }
+.ask-changes .card-icon { background: var(--coral); box-shadow: 0 4px 12px color-mix(in srgb, var(--coral) 30%, transparent); }
+.ask-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.ask-row textarea { flex: 1 1 320px; margin: 0; background: var(--field); }
+.ask-row .btn { flex: none; padding: 12px 24px; }
 
 /* Approve: locked (soft and not clickable) until the last card has been seen, then teal */
 .btn-locked { background: var(--primary-soft); color: var(--muted); cursor: not-allowed; box-shadow: none; }
@@ -510,9 +657,9 @@ details.card summary { cursor: pointer; font-weight: 600; }
   flex: 0 0 64%;
   scroll-snap-align: center;
   min-height: 420px;
-  border: 1px solid var(--border); border-top: 8px solid var(--border);
+  border: 1px solid var(--border); border-top: 6px solid color-mix(in srgb, var(--primary) 35%, var(--border));
   border-radius: 20px; padding: 32px 44px; background: var(--card);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.10);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--indigo) 12%, transparent);
   font-size: 1.3rem;
   opacity: 0.4; transform: scale(0.92);
   transition: opacity 0.3s, transform 0.3s;
@@ -537,9 +684,20 @@ details.card summary { cursor: pointer; font-weight: 600; }
 }
 .slide-no {
   display: inline-grid; place-items: center; flex: none;
-  width: 28px; height: 28px; border-radius: 50%;
-  background: var(--border); color: var(--text); font-size: 0.85rem;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--primary-soft); color: var(--primary); font-size: 0.85rem;
 }
+/* a card's icon: a rounded square like the app icon, in the card's color (indigo by default) */
+.slide-icon {
+  display: inline-grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 13px;
+  background: var(--primary-soft); color: var(--primary);
+}
+.slide-icon svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.slide.accent .slide-icon { background: var(--primary); color: var(--on-color); }
+.slide.warn .slide-icon { background: var(--warn); color: var(--on-color); }
+.slide.good .slide-icon { background: var(--high); color: var(--on-color); }
+.overview .slide-icon { width: 36px; height: 36px; border-radius: 11px; }
+.overview .slide-icon svg { width: 20px; height: 20px; }
 .slide p { margin: 0 0 8px; }
 .slide ul, .slide ol { margin: 0; padding-left: 22px; }
 .slide li + li { margin-top: 6px; }
@@ -549,34 +707,57 @@ details.card summary { cursor: pointer; font-weight: 600; }
 .slide.warn .slide-no { background: var(--warn); color: var(--on-color); }
 .slide.good { border-top-color: var(--high); background: color-mix(in srgb, var(--high) 12%, var(--card)); }
 .slide.good .slide-no { background: var(--high); color: var(--on-color); }
+/* the round arrows on each side: an indigo circle with a white chevron (an SVG, so it is centred) */
 .carousel .arrow {
-  flex: none; width: 54px; height: 54px; padding: 0 0 4px;
-  font-size: 2.1rem; font-weight: 700; line-height: 1; border-radius: 50%;
-  background: var(--primary); color: #fff; border: 0;
+  flex: none; display: grid; place-items: center; width: 54px; height: 54px; padding: 0;
+  border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: var(--on-color); border: 0;
   box-shadow: 0 4px 14px color-mix(in srgb, var(--primary) 40%, transparent);
 }
-.carousel .arrow:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+.carousel .arrow svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.carousel .arrow:hover:not(:disabled) { filter: brightness(1.08); }
 .carousel .arrow.off { visibility: hidden; } /* no arrow before the first card or after the last */
-.overview .arrow { width: 40px; height: 40px; font-size: 1.5rem; }
-.carousel-dots { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
+.overview .arrow { width: 40px; height: 40px; }
+.overview .arrow svg { width: 18px; height: 18px; }
+/* where you are: a short bar per card; the current one is long and indigo, the ones already seen
+   a lighter indigo */
+.carousel-dots { display: flex; justify-content: center; gap: 6px; margin-top: 12px; }
 .btn-wide { min-width: 320px; padding: 12px 24px; font-size: 1.05rem; margin-top: 16px; }
-.carousel-dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--border); transition: background 0.2s; }
-.carousel-dots span.on { background: var(--primary); }
+.carousel-dots span { width: 12px; height: 6px; border-radius: 3px; background: var(--border); transition: background 0.2s, width 0.25s; }
+.carousel-dots span.seen { background: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.carousel-dots span.on { width: 28px; background: var(--primary); }
 
 /* ---------- interview ---------- */
 
 .interview-layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .transcript { display: flex; flex-direction: column; gap: 10px; }
+/* "Question 1": a small indigo pill on a line across the conversation */
 .q-divider {
   display: flex; align-items: center; gap: 10px; margin-top: 8px;
-  color: var(--muted); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--primary); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
 }
+.q-divider::before { content: ""; width: 14px; border-top: 1px solid var(--border); }
 .q-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
-.line { padding: 12px 18px; border-radius: 14px; border: 1px solid var(--border); max-width: 88%; }
-.line .who { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+/* One message: an avatar next to a bubble. The interviewer (the app icon) is on the left in a
+   white bubble; you (your initial) are on the right in an indigo-tinted bubble. The corner next
+   to the avatar is less rounded, so the bubble points at who speaks. */
+.line { display: flex; align-items: flex-start; gap: 12px; max-width: 88%; }
+.line-avatar { flex: none; width: 38px; height: 38px; border-radius: 11px; }
+.line-avatar.you {
+  display: grid; place-items: center; border-radius: 50%;
+  background: var(--primary); color: #fff;
+  font-family: var(--font-heading); font-weight: 700; font-size: 0.9rem; text-transform: uppercase;
+}
+.bubble {
+  min-width: 0; padding: 12px 18px; border-radius: 4px 18px 18px 18px;
+  border: 1px solid var(--border); background: var(--card);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--indigo) 6%, transparent);
+}
+.line .who { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 700; color: var(--primary); }
 .line p { margin: 4px 0 0; font-size: 1.2rem; line-height: 1.55; }
 .line.interviewer { align-self: flex-start; }
-.line.candidate { align-self: flex-end; background: var(--you); border-color: transparent; }
+.line.candidate { align-self: flex-end; flex-direction: row-reverse; }
+.line.candidate .bubble { background: var(--you); border-color: transparent; border-radius: 18px 4px 18px 18px; box-shadow: none; }
+.line.candidate .who { color: var(--muted); }
 .tag { padding: 0 6px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); font-size: 0.72rem; }
 .sources { margin-top: 6px; font-size: 0.8rem; color: var(--muted); }
 .sources summary { cursor: pointer; }
@@ -584,27 +765,75 @@ details.card summary { cursor: pointer; font-weight: 600; }
 
 .side { display: flex; flex-direction: column; gap: 14px; }
 .progress-block h2 { margin: 0 0 6px; }
-.progress-bar { height: 8px; border-radius: 99px; background: var(--border); overflow: hidden; }
-#progress-fill { height: 100%; width: 0; background: var(--primary); transition: width 0.3s; }
-.toggle { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 500; }
-.toggle input { width: auto; margin: 0; }
+.progress-bar { height: 8px; border-radius: 99px; background: var(--primary-soft); overflow: hidden; }
+#progress-fill { height: 100%; width: 0; border-radius: 99px; background: var(--primary); transition: width 0.3s; }
+/* "Answer by voice": a checkbox drawn as a switch (a knob that slides right and turns the track
+   indigo when on) */
+.toggle { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 500; cursor: pointer; }
+.toggle input {
+  appearance: none; -webkit-appearance: none; position: relative; flex: none;
+  width: 44px; height: 24px; margin: 0; padding: 0; border: 0; border-radius: 999px;
+  background: var(--border); cursor: pointer; transition: background 0.2s;
+}
+.toggle input::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 0.2s;
+}
+.toggle input:checked { background: var(--primary); }
+.toggle input:checked::after { transform: translateX(20px); }
+.toggle input:focus-visible { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 25%, transparent); }
 
 .controls { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
 .controls[hidden] { display: none; } /* display: flex would otherwise beat `hidden` */
 .controls textarea { width: 100%; }
 .controls p { margin: 0; }
+/* The record button: a coral disc with a soft coral ring around it, the logo's sound bars (four
+   bars and a dot) above the label. While recording the bars move like a level meter and the
+   ring pulses outwards. */
 .talk {
-  width: 150px; height: 150px;
-  border-radius: 50%;
-  border: 3px solid var(--record);
-  background: var(--record-soft);
-  color: var(--record);
-  font-size: 1rem;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  width: 156px; height: 156px; margin: 8px 0 4px; padding: 0 18px;
+  border-radius: 50%; border: 0;
+  background: linear-gradient(135deg, var(--record), color-mix(in srgb, var(--record) 82%, var(--midnight)));
+  color: #fff; font-size: 0.98rem; line-height: 1.2;
+  box-shadow: 0 0 0 10px var(--record-soft), 0 10px 24px color-mix(in srgb, var(--record) 35%, transparent);
   user-select: none;
 }
-.talk:hover:not(:disabled) { background: var(--record); color: var(--on-color); }
-.talk.recording { background: var(--record); color: var(--on-color); animation: pulse 1.2s ease-in-out infinite; }
+.talk:hover:not(:disabled) { filter: brightness(1.06); transform: scale(1.03); }
+.talk.recording { animation: ring 1.4s ease-out infinite; }
+@keyframes ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--record) 45%, transparent), 0 10px 24px color-mix(in srgb, var(--record) 35%, transparent); }
+  100% { box-shadow: 0 0 0 22px transparent, 0 10px 24px color-mix(in srgb, var(--record) 35%, transparent); }
+}
 @keyframes pulse { 50% { transform: scale(1.05); box-shadow: 0 0 0 10px var(--record-soft); } }
+.waves { display: flex; align-items: center; gap: 5px; height: 30px; }
+.waves i { display: block; width: 5px; border-radius: 3px; background: #fff; }
+.waves i:nth-child(1) { height: 14px; }
+.waves i:nth-child(2) { height: 28px; }
+.waves i:nth-child(3) { height: 20px; }
+.waves i:nth-child(4) { height: 10px; }
+.waves b { display: block; width: 8px; height: 8px; margin-left: 1px; border-radius: 50%; background: #fff; }
+.talk.recording .waves i { animation: level 0.9s ease-in-out infinite; }
+.talk.recording .waves i:nth-child(2) { animation-delay: 0.15s; }
+.talk.recording .waves i:nth-child(3) { animation-delay: 0.3s; }
+.talk.recording .waves i:nth-child(4) { animation-delay: 0.45s; }
+@keyframes level { 50% { transform: scaleY(0.4); } }
+/* While the server works (all buttons are disabled), the record button turns into a calm indigo
+   "One moment" with its bars moving slowly, instead of a faded coral button. */
+.talk:disabled {
+  opacity: 1; background: var(--primary-soft); color: var(--primary);
+  box-shadow: 0 0 0 10px color-mix(in srgb, var(--primary-soft) 50%, transparent);
+}
+.talk:disabled .waves i, .talk:disabled .waves b { background: var(--primary); }
+.talk:disabled .waves i { animation: level 1.6s ease-in-out infinite; }
+.talk:disabled .waves i:nth-child(2) { animation-delay: 0.2s; }
+.talk:disabled .waves i:nth-child(3) { animation-delay: 0.4s; }
+.talk:disabled .waves i:nth-child(4) { animation-delay: 0.6s; }
+.talk:disabled #talk-label { display: none; }
+.talk:disabled::after { content: "One moment"; }
+/* a button with a small icon before its text (Replay the question) */
+.btn-icon { display: inline-flex; align-items: center; gap: 8px; }
+.btn-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .end-row { display: flex; justify-content: center; padding-top: 14px; border-top: 1px solid var(--border); }
 .end-row .btn { width: 100%; }
 #timings { margin: 0; text-align: center; }
@@ -645,13 +874,25 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-
 .feedback-layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .overview { display: flex; flex-direction: column; gap: 14px; }
 .overview p { margin: 0; }
-.score-head { display: flex; align-items: center; gap: 16px; }
-.score-big {
-  display: grid; place-items: center; flex: none;
-  width: 84px; height: 84px; border-radius: 50%;
-  border: 5px solid currentColor; font-size: 1.7rem; font-weight: 800;
+.score-head { display: flex; align-items: center; gap: 18px; }
+.score-head h2 { margin: 0 0 4px; font-size: 1.45rem; font-weight: 700; }
+/* "Your feedback", "Rubric", "Question by question": bold, ending in the logo's coral dot */
+.score-head h2::after, .details h2::after {
+  content: ""; display: inline-block; width: 0.26em; height: 0.26em; margin-left: 0.12em;
+  border-radius: 50%; background: var(--coral);
 }
-.score-big small { display: block; font-size: 0.75rem; font-weight: 600; margin-top: -8px; }
+/* The overall score: a ring (an SVG circle) filled round by score / 5, in the score's color, on a
+   light track; the number in the middle. */
+.score-big {
+  position: relative; display: grid; place-items: center; flex: none;
+  width: 96px; height: 96px; font-size: 2rem; font-weight: 700;
+}
+.score-big svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.score-big circle { fill: none; stroke-width: 8; }
+.score-big .track { stroke: color-mix(in srgb, currentColor 14%, transparent); }
+.score-big .arc { stroke: currentColor; stroke-linecap: round; }
+.score-big span { line-height: 1; text-align: center; }
+.score-big small { display: block; font-size: 0.75rem; font-weight: 600; margin-top: 2px; color: var(--muted); }
 .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 0.8rem; font-weight: 600; }
 .overview ol, .overview ul { margin: 0; padding-left: 20px; }
 .overview li + li { margin-top: 4px; }
@@ -660,27 +901,43 @@ kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-
 .box.strengths { background: color-mix(in srgb, var(--high) 12%, transparent); }
 .box h3 { margin-bottom: 6px; }
 
-.details h2 { margin-top: 4px; }
-.details h2 + .hint { margin: -8px 0 10px; }
-.item { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--card); }
+/* The details: two white panels, the rubric then the questions */
+.details { display: flex; flex-direction: column; gap: 16px; }
+.details h2 { margin: 2px 0 0; font-size: 1.3rem; font-weight: 700; }
+.details h2 + .hint { margin: 2px 0 14px; }
+/* One criterion or question: a row you click open. Its left edge takes the score's color; the
+   chevron on the right turns when it is open. */
+.item {
+  border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 12px;
+  margin-bottom: 8px; background: var(--card); transition: box-shadow 0.15s, border-color 0.15s;
+}
+.item:has(.num.low) { border-left-color: var(--low); }
+.item:has(.num.mid) { border-left-color: var(--mid); }
+.item:has(.num.high) { border-left-color: var(--high); }
+.item:hover, .item[open] { box-shadow: 0 4px 16px color-mix(in srgb, var(--indigo) 10%, transparent); }
 .item summary {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; cursor: pointer; list-style: none;
 }
 .item summary::-webkit-details-marker { display: none; }
-.item summary::after { content: "+"; margin-left: auto; color: var(--muted); font-weight: 700; }
-.item[open] summary::after { content: "–"; }
+.item summary::after { /* a chevron drawn with two borders */
+  content: ""; flex: none; width: 8px; height: 8px; margin: 0 4px 4px auto;
+  border: solid var(--primary); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg); transition: transform 0.2s;
+}
+.item[open] summary::after { transform: rotate(-135deg); margin-bottom: -2px; }
 .item summary { font-size: 1.08rem; }
+.item summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 35%, transparent); outline-offset: 2px; border-radius: 10px; }
 .item .body { padding: 2px 16px 14px; font-size: 1.08rem; }
 .item .body p { margin: 0 0 10px; }
 .improve { border-radius: 10px; padding: 10px 14px; background: var(--primary-soft); }
 .improve ul { margin: 4px 0 0; padding-left: 20px; }
 .improve li + li { margin-top: 4px; }
 .item .label { display: block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.04em; }
-.crit-name { min-width: 150px; font-weight: 600; }
-.bar { display: flex; gap: 3px; }
-.bar span { width: 18px; height: 8px; border-radius: 3px; background: var(--border); }
-.num { font-weight: 800; min-width: 28px; text-align: center; padding: 1px 8px; border-radius: 8px; color: var(--on-color); }
+.crit-name { min-width: 190px; font-weight: 600; }
+.bar { display: flex; gap: 4px; }
+.bar span { width: 26px; height: 8px; border-radius: 4px; background: var(--primary-soft); }
+/* the score: a number in a rounded square of its color, like the app icon */
+.num { display: inline-grid; place-items: center; flex: none; font-weight: 700; min-width: 30px; height: 30px; padding: 0 8px; border-radius: 9px; color: var(--on-color); }
 .q-text { font-weight: 600; }
 .exchange { border-left: 3px solid var(--border); padding-left: 10px; font-size: 0.9rem; color: var(--muted); }
 

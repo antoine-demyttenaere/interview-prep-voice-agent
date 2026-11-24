@@ -27,7 +27,10 @@ How it works:
   your documents the interviewer drew on.
 - "End interview and get feedback" calls POST /sessions/{id}/end; "New interview" (top right)
   goes back to the setup form, and the session it leaves stays saved.
-- The brief is a carousel: six numbered cards you scroll from left to right (carousel()).
+- The brief is a carousel: six cards you scroll from left to right (carousel()), each with a
+  line icon from ICONS in a rounded square; bars under it show the current card and those seen.
+- The conversation shows each message as an avatar (the app icon for the interviewer, your
+  initial for you) next to a bubble (line()).
 - The feedback shows the score, a carousel (in short, fix first, keep doing) and details you
   click open: each rubric criterion (score bar -> why, and how to improve) and each question
   (score -> comment, a stronger answer, and your own answer from the transcript).
@@ -202,13 +205,35 @@ function render(view) {
   renderInterview(view);
 }
 
+// A small line icon (24x24, drawn with SVG paths in the current text color), for card titles.
+function icon(paths) {
+  const span = el("span", { class: "slide-icon", "aria-hidden": "true" });
+  span.innerHTML = `<svg viewBox="0 0 24 24">${paths}</svg>`; // our own fixed markup, never user text
+  return span;
+}
+const ICONS = {
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  building: '<path d="M4 21V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v16M15 9h4a1 1 0 0 1 1 1v11M3 21h18M8 8h3M8 12h3M8 16h3"/>',
+  people: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
+  checklist: '<path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/>',
+  gap: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5v.01"/>',
+  question: '<path d="M4 5h16v11H9l-5 4z"/><path d="M10 9a2 2 0 1 1 2.5 1.9c-.4.2-.5.5-.5.9v.4M12 14.5v.01"/>',
+  quote: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/>',
+  star: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>',
+};
+
 // --- carousel: a row of cards you scroll (or swipe) from left to right ---
-// cards: [{title, cls, content: [nodes]}]. Arrows move one card; dots show where you are.
+// cards: [{title, cls, icon, content: [nodes]}]. A card with an icon (ICONS) shows it in a rounded
+// square before its title; one without shows its number. Arrows move one card; the bars under
+// the cards show where you are (the current one long, those already seen in a lighter indigo).
+
+const CHEVRON = { prev: '<path d="M15 5l-7 7 7 7"/>', next: '<path d="M9 5l7 7-7 7"/>' };
 
 function carousel(cards, onChange) {
   const track = el("div", { class: "carousel-track" },
     cards.map((c, i) => el("article", { class: `slide ${c.cls || ""}` },
-      el("h3", {}, el("span", { class: "slide-no" }, i + 1), c.title), ...c.content)));
+      el("h3", {}, c.icon ? icon(ICONS[c.icon]) : el("span", { class: "slide-no" }, i + 1), c.title),
+      ...c.content)));
   const dots = el("div", { class: "carousel-dots" }, cards.map(() => el("span")));
   const slides = [...track.children];
   let current = 0;
@@ -219,8 +244,11 @@ function carousel(cards, onChange) {
     track.scrollTo({ left: s.offsetLeft + s.offsetWidth / 2 - track.clientWidth / 2, behavior: "smooth" });
   };
   const step = (dir) => goTo(current + dir);
-  const prev = el("button", { type: "button", class: "btn arrow", "aria-label": "Previous card" }, "‹");
-  const next = el("button", { type: "button", class: "btn arrow", "aria-label": "Next card" }, "›");
+  const prev = el("button", { type: "button", class: "btn arrow", "aria-label": "Previous card" });
+  const next = el("button", { type: "button", class: "btn arrow", "aria-label": "Next card" });
+  prev.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${CHEVRON.prev}</svg>`;
+  next.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${CHEVRON.next}</svg>`;
+  let seen = 0; // the furthest card reached, for the bars
   prev.onclick = () => step(-1);
   next.onclick = () => step(1);
   slides.forEach((s, i) => s.addEventListener("click", () => { if (i !== current) goTo(i); }));
@@ -232,7 +260,11 @@ function carousel(cards, onChange) {
       Math.abs(s.offsetLeft + s.offsetWidth / 2 - middle) <
       Math.abs(slides[best].offsetLeft + slides[best].offsetWidth / 2 - middle) ? i : best, 0);
     slides.forEach((s, i) => s.classList.toggle("current", i === current));
-    [...dots.children].forEach((d, i) => d.classList.toggle("on", i === current));
+    seen = Math.max(seen, current);
+    [...dots.children].forEach((d, i) => {
+      d.classList.toggle("on", i === current);
+      d.classList.toggle("seen", i <= seen && i !== current);
+    });
     prev.classList.toggle("off", current === 0);
     next.classList.toggle("off", current === slides.length - 1);
     if (onChange) onChange(current, slides.length);
@@ -270,12 +302,12 @@ function renderBrief(b) {
   setApprove(false, 5);
   const people = b.interviewers.map((i) => `${i.name}, ${i.role}${i.notes ? ` (${i.notes})` : ""}`);
   $("brief").replaceChildren(carousel([
-    { title: "Focus on", cls: "accent", content: [list(b.focus_areas)] },
-    { title: "The company", content: [el("p", {}, b.company_summary)] },
-    { title: "The interview", content: [el("p", {}, b.interview_format), people.length ? list(people) : ""] },
-    { title: "The role needs", content: [list(b.role_requirements)] },
-    { title: "Your gaps", cls: "warn", content: [list(b.cv_gaps)] },
-    { title: "Likely questions", content: [list(b.probable_questions, true)] },
+    { title: "Focus on", cls: "accent", icon: "target", content: [list(b.focus_areas)] },
+    { title: "The company", icon: "building", content: [el("p", {}, b.company_summary)] },
+    { title: "The interview", icon: "people", content: [el("p", {}, b.interview_format), people.length ? list(people) : ""] },
+    { title: "The role needs", icon: "checklist", content: [list(b.role_requirements)] },
+    { title: "Your gaps", cls: "warn", icon: "gap", content: [list(b.cv_gaps)] },
+    { title: "Likely questions", icon: "question", content: [list(b.probable_questions, true)] },
   ], (current, total) => {
     if (current === total - 1) seenLast = true;
     setApprove(seenLast, total - 1 - current);
@@ -283,6 +315,16 @@ function renderBrief(b) {
 }
 
 // --- interview: the transcript grouped by question ---
+
+// One message of the conversation: an avatar (the app icon for the interviewer, your initial for
+// you) next to a bubble holding `children`. attrs go on the whole line (class, id).
+function line(role, attrs, ...children) {
+  const avatar = role === "interviewer"
+    ? el("img", { class: "line-avatar", src: "brand/app-icon.png", alt: "" })
+    : el("span", { class: "line-avatar you", "aria-hidden": "true" }, $("avatar").textContent || "?");
+  return el("div", { ...attrs, class: `line ${role} ${attrs.class || ""}` },
+    avatar, el("div", { class: "bubble" }, ...children));
+}
 
 function renderTranscript(turns) {
   const nodes = [];
@@ -297,7 +339,7 @@ function renderTranscript(turns) {
           el("summary", {}, `Based on ${t.sources.length} document${t.sources.length > 1 ? "s" : ""}`),
           list(t.sources))
       : "";
-    nodes.push(el("div", { class: `line ${t.role}` },
+    nodes.push(line(t.role, {},
       el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You",
         t.followup && t.role === "interviewer" ? el("span", { class: "tag" }, "follow-up") : ""),
       el("p", {}, t.text),
@@ -313,7 +355,7 @@ function renderTranscript(turns) {
 // "interviewer" while the next question is being prepared. render() replaces it.
 function showPending(role) {
   hidePending();
-  const bubble = el("div", { class: `line ${role} pending`, id: "pending-bubble" },
+  const bubble = line(role, { class: "pending", id: "pending-bubble" },
     el("span", { class: "who" }, role === "interviewer" ? "Interviewer" : "You"),
     el("span", { class: "dots", "aria-label": role === "interviewer" ? "The interviewer is thinking" : "Recording" },
       el("i"), el("i"), el("i")));
@@ -388,18 +430,24 @@ function renderFeedback(view) {
   const answered = new Set((view.transcript || []).filter((t) => t.role === "candidate").map((t) => t.q_index)).size;
 
   // Top: the score, then the three key messages as cards you swipe through.
+  // The score ring: an SVG circle whose colored arc covers score / 5 of the way round.
+  const ring = el("div", { class: `score-big ${level(fb.overall_score)}` });
+  const arc = (2 * Math.PI * 36 * fb.overall_score) / 5;
+  ring.innerHTML = `<svg viewBox="0 0 84 84" aria-hidden="true"><circle class="track" cx="42" cy="42" r="36"/>`
+    + `<circle class="arc" cx="42" cy="42" r="36" stroke-dasharray="${arc} 999"/></svg>`;
+  ring.append(el("span", {}, fb.overall_score, el("small", {}, "/ 5")));
   const overview = el("div", { class: "panel overview" },
     el("div", { class: "score-head" },
-      el("div", { class: `score-big ${level(fb.overall_score)}` }, el("span", {}, fb.overall_score, el("small", {}, "/ 5"))),
+      ring,
       el("div", {},
         el("h2", {}, "Your feedback"),
         view.ended_early
           ? el("span", { class: "badge" }, `Ended early: ${answered} of ${view.total_questions} questions`)
           : el("span", { class: "muted small" }, `${view.total_questions} questions`))),
     carousel([
-      { title: "In short", content: [el("p", {}, fb.summary)] },
-      { title: "Fix first", cls: "accent", content: [list(fb.fixes, true)] },
-      { title: "Keep doing", cls: "good", content: [list(fb.strengths)] },
+      { title: "In short", icon: "quote", content: [el("p", {}, fb.summary)] },
+      { title: "Fix first", cls: "accent", icon: "target", content: [list(fb.fixes, true)] },
+      { title: "Keep doing", cls: "good", icon: "star", content: [list(fb.strengths)] },
     ]),
   );
 
@@ -426,10 +474,12 @@ function renderFeedback(view) {
 
   $("feedback").replaceChildren(
     overview,
-    el("div", { class: "panel details" },
-      el("h2", {}, "Rubric"), el("p", { class: "hint muted small" }, "Click a criterion to see why, and how to improve it."), ...rubric,
-      el("h2", {}, "Question by question"), el("p", { class: "hint muted small" }, "Click a question to see the comment and your answer."),
-      ...questions),
+    el("div", { class: "details" },
+      el("section", { class: "panel" },
+        el("h2", {}, "Rubric"), el("p", { class: "hint muted small" }, "Click a criterion to see why, and how to improve it."), ...rubric),
+      el("section", { class: "panel" },
+        el("h2", {}, "Question by question"), el("p", { class: "hint muted small" }, "Click a question to see the comment and your answer."),
+        ...questions)),
   );
 }
 
@@ -471,11 +521,20 @@ async function loadStoredCv() {
           updateSubmitLabel();
         });
       };
-      return el("div", { class: "stored" },
-        el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · ${d.chunks} chunks`)), del);
+      return storedRow(d.source, `${d.chunks} chunks`, del);
     }));
   }
   updateReplaceRow();
+}
+
+// One stored document: a tile with its file type (PDF, DOCX...), its name, a short note, and a
+// Delete button. Used for your CV and for the company documents already added.
+function storedRow(name, note, button) {
+  const ext = (/\.(\w{2,4})$/.exec(name) || [, "txt"])[1].toUpperCase();
+  return el("div", { class: "stored" },
+    el("span", { class: "file-tile", "aria-hidden": "true" }, ext),
+    el("span", { class: "stored-name" }, el("strong", {}, name), el("span", { class: "muted small" }, note)),
+    button);
 }
 
 function updateReplaceRow() {
@@ -484,10 +543,19 @@ function updateReplaceRow() {
   $("replace-cv-row").hidden = !(hasNew && state.storedCv.length);
 }
 
-$("cv-file-input").addEventListener("change", updateReplaceRow);
+$("cv-file-input").addEventListener("change", (e) => {
+  $("cv-chips").replaceChildren(...[...e.target.files].map((file) => el("li", {}, file.name)));
+  updateReplaceRow();
+});
 $("setup-form").elements.cv.addEventListener("input", updateReplaceRow);
 $("files-input").addEventListener("change", (e) => {
   $("file-chips").replaceChildren(...[...e.target.files].map((file) => el("li", {}, file.name)));
+});
+// Drop zones: highlighted while a file is dragged over them (the file input inside takes the drop).
+document.querySelectorAll(".dropzone input").forEach((input) => {
+  const zone = input.parentElement;
+  input.addEventListener("dragenter", () => zone.classList.add("over"));
+  ["dragleave", "drop"].forEach((t) => input.addEventListener(t, () => zone.classList.remove("over")));
 });
 
 // ---------- setup: the 3-step form (left to right) ----------
@@ -553,6 +621,14 @@ function nextStep() {
   if (wizard.step === 0 && !stepOneValid()) return;
   goStep(wizard.step + 1);
 }
+
+// The − and + buttons next to "Questions": one less or one more, within the field's min and max.
+// The "input" event lets the draft save it, as if you had typed the number.
+document.querySelectorAll(".step-btn").forEach((b) => b.addEventListener("click", () => {
+  const input = b.parentElement.querySelector("input");
+  if (Number(b.dataset.delta) > 0) input.stepUp(); else input.stepDown();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}));
 
 $("wizard-next").addEventListener("click", nextStep);
 $("wizard-back").addEventListener("click", () => goStep(wizard.step - 1));
@@ -739,7 +815,7 @@ async function startRecording() {
     state.recordStart = Date.now();
     state.autoStop = setTimeout(stopRecording, maxRecordingMs);
     $("talk").classList.add("recording");
-    $("talk").textContent = "Stop and send";
+    $("talk-label").textContent = "Stop and send";
     showPending("candidate");
     // "1:23 / 5:00" under the button; coral blinking in the last 30 seconds
     const limit = maxRecordingMs / 1000;
@@ -768,7 +844,7 @@ function stopRecording() {
   $("rec-timer").hidden = true;
   hidePending();
   $("talk").classList.remove("recording");
-  $("talk").textContent = "Start answering";
+  $("talk-label").textContent = "Start answering";
 
   recorder.addEventListener("stop", () => {
     if (Date.now() - state.recordStart < 400) return showError("That was too short. Start, give your answer, then stop.");
@@ -844,7 +920,7 @@ $("end-interview").addEventListener("click", () => {
     state.recorder.stop();
     state.recorder = null;
     $("talk").classList.remove("recording");
-    $("talk").textContent = "Start answering";
+    $("talk-label").textContent = "Start answering";
   }
   run("Writing your feedback (about 30 s)...", async () =>
     render(await api("POST", `/sessions/${state.sessionId}/end`)));
@@ -909,8 +985,7 @@ function renderExistingDocs(docs) {
         updateSubmitLabel();
       });
     };
-    return el("div", { class: "stored" },
-      el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · already added · ${d.chunks} chunks`)), del);
+    return storedRow(d.source, `Already added · ${d.chunks} chunks`, del);
   }));
 }
 
@@ -933,6 +1008,7 @@ function clearSentInputs() {
   $("files-input").value = "";
   $("cv-file-input").value = "";
   $("file-chips").replaceChildren();
+  $("cv-chips").replaceChildren();
   f.cv.value = "";
   f.links.value = "";
   f.job_link.value = "";
@@ -948,6 +1024,7 @@ function goToSetup() {
   $("leave").hidden = true;
   $("setup-form").reset();
   $("file-chips").replaceChildren();
+  $("cv-chips").replaceChildren();
   renderExistingDocs([]);
   clearDraft();
   showSetup(0);
@@ -1056,10 +1133,13 @@ $("voice-toggle").checked = state.voiceOn;
 
 // ---------- login ----------
 
-// Header: your email and "Log out" when logged in (user = {email, is_admin}), nothing otherwise.
+// Header: your initial, your email and "Log out" when logged in (user = {email, is_admin}),
+// nothing otherwise.
 function setAccount(user) {
   $("account").textContent = user ? user.email : "";
+  $("avatar").textContent = user ? user.email.charAt(0) : "";
   $("account").hidden = !user;
+  $("avatar").hidden = !user;
   $("logout").hidden = !user;
   if (!user) $("spend").hidden = true;
 }

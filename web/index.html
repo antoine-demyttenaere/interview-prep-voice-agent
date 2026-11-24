@@ -28,9 +28,10 @@ style.css the look. There are five panels, and app.js shows one at a time:
 The Practiss logo (top left, images in web/brand/: one for light mode, one for dark) and "New
 interview" (top right) go back to an empty setup form at any time; the button next to it
 switches between light and dark colors. Once you're logged in, what you have left (GET /usage; an
-admin sees the month's budget instead, in Sun from 80%) and your initial and email sit in one white
-pill; a click on your initial opens the account menu: your 10 latest sessions (GET /sessions, a
-click continues one), "Delete my account…" (a dialog, confirmed by an emailed code) and Log out.
+admin sees the month's budget instead, in Sun from 80%), "Your sessions" and your initial sit in
+one white pill. "Your sessions" opens a scrolling list of your 10 latest sessions (GET /sessions; a
+click continues one); your initial opens the account menu: your email, "Delete my account…" (a
+dialog, confirmed by an emailed code) and Log out.
 No build step and no framework: edit a file, reload the page.
 -->
 <!doctype html>
@@ -61,24 +62,31 @@ No build step and no framework: edit a file, reload the page.
     <div class="top-right">
       <span id="session-label" class="muted small"></span>
       <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
-      <!-- Once logged in: what's left, then your initial and email in one white pill. A click on
-           your initial opens the account menu: your latest sessions, "Delete my account…", Log out -->
+      <!-- Once logged in, one white pill: what's left, "Your sessions" (opens a scrolling list of
+           your latest sessions) and your initial (opens the account menu: "Delete my account…",
+           Log out). Both menus hang under the pill, right-aligned. -->
       <div class="account-bar">
         <span id="spend" class="spend small" hidden></span>
-        <button id="account-button" type="button" class="account-button" aria-haspopup="menu" aria-expanded="false"
-                aria-controls="account-menu" hidden>
-          <span id="avatar" class="avatar" aria-hidden="true"></span>
-          <span id="account" class="small"></span>
+        <button id="sessions-button" type="button" class="bar-button" aria-haspopup="menu" aria-expanded="false"
+                aria-controls="sessions-menu" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span class="bar-label">Your sessions</span>
           <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
         </button>
-        <div id="account-menu" class="account-menu" role="menu" hidden>
+        <button id="account-button" type="button" class="account-button" aria-haspopup="menu" aria-expanded="false"
+                aria-controls="account-menu" aria-label="Your account" hidden>
+          <span id="avatar" class="avatar" aria-hidden="true"></span>
+        </button>
+        <div id="sessions-menu" class="account-menu" role="menu" hidden>
+          <p class="menu-label">Your sessions</p>
+          <!-- Filled by app.js from GET /sessions each time the menu opens; a click opens that session -->
+          <div id="session-list" class="session-list"><p class="muted small">Loading...</p></div>
+        </div>
+        <div id="account-menu" class="account-menu account-menu-small" role="menu" hidden>
           <div class="menu-head">
             <span id="menu-avatar" class="avatar" aria-hidden="true"></span>
             <span><strong id="menu-email"></strong><span id="menu-spend" class="muted small"></span></span>
           </div>
-          <p class="menu-label">Your sessions</p>
-          <!-- Filled by app.js from GET /sessions each time the menu opens; a click opens that session -->
-          <div id="session-list" class="session-list"><p class="muted small">Loading...</p></div>
           <div class="menu-foot">
             <button id="open-account-dialog" type="button" class="menu-item" role="menuitem">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Delete my account…</button>

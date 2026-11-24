@@ -26,9 +26,10 @@ style.css - the look of the web page (web/index.html).
   (.card-icon, .slide-icon, .file-tile, .num, step numbers); page titles end in a coral dot
   (h2::after); the logo's sound bars (.waves) are on the record button and in the floating
   "working" pill (.busy, bottom centre). Only buttons use gradients; everything else is solid.
-- Top right, once logged in: one white pill (what's left, your initial and email); a click on the
-  initial opens the account menu (.account-menu: your sessions, Delete my account, Log out), and
-  "Delete my account" is a modal <dialog> (.account-dialog) over a dimmed page.
+- Top right, once logged in: one white pill (what's left, "Your sessions", your initial). "Your
+  sessions" opens a scrolling list (.account-menu #sessions-menu); the initial opens the account
+  menu (.account-menu-small: your email, Delete my account, Log out); "Delete my account" is a
+  modal <dialog> (.account-dialog) over a dimmed page.
 - The login screens (your email, then the code or an admin's password) are one narrow white card
   in the middle of the page (.auth-card), with the app icon on top and Google's button below.
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
@@ -221,9 +222,9 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card .google-button { display: flex; justify-content: center; min-height: 44px; }
 /* what's left (a user) or the month's budget (an admin) in the header; Sun tint when a budget is at 80% or more */
 .spend { color: var(--muted); padding: 4px 12px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
-/* Once logged in, the top right holds one white pill: what's left, then a button with your
-   initial (an indigo circle), your email and a chevron, which opens the account menu below. The
-   pill disappears when everything in it is hidden (logged out). */
+/* Once logged in, the top right holds one white pill: what's left, "Your sessions" (opens the
+   list of your sessions) and your initial in an indigo circle (opens the account menu). Both
+   menus hang under the pill. The pill disappears when everything in it is hidden (logged out). */
 .account-bar {
   position: relative; /* the menu is placed under it */
   display: flex; align-items: center; gap: 8px; padding: 4px;
@@ -233,22 +234,27 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .account-bar:not(:has(> :not([hidden]))) { display: none; }
 .account-bar [hidden] { display: none !important; }
 .account-bar > .spend { margin-left: 2px; }
-.account-button {
-  display: flex; align-items: center; gap: 8px; padding: 2px 12px 2px 2px;
+/* "Your sessions": a clock icon, the label and a chevron that turns when the list is open */
+.bar-button {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 10px;
   border: 0; border-radius: 999px; background: transparent; color: var(--text);
-  font: inherit; cursor: pointer; transition: background 0.15s;
+  font: inherit; font-size: 0.9rem; font-weight: 500; white-space: nowrap; cursor: pointer; transition: background 0.15s;
 }
-.account-button:hover, .account-button[aria-expanded="true"] { background: var(--primary-soft); }
-.account-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 40%, transparent); outline-offset: 2px; }
-.account-button .chevron { width: 16px; height: 16px; fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.2s; }
-.account-button[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.bar-button svg { width: 18px; height: 18px; fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.bar-button .chevron { width: 15px; height: 15px; stroke-width: 2.5; transition: transform 0.2s; }
+.bar-button[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+/* your initial: just the indigo circle, with a soft ring on hover and while its menu is open */
+.account-button { display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.account-button .avatar { transition: box-shadow 0.15s; }
+.account-button:hover .avatar, .account-button[aria-expanded="true"] .avatar { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent); }
+.bar-button:hover, .bar-button[aria-expanded="true"] { background: var(--primary-soft); }
+.bar-button:focus-visible, .account-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 40%, transparent); outline-offset: 2px; }
 .avatar {
   display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%;
   background: var(--primary); color: #fff;
   font-family: var(--font-heading); font-weight: 700; font-size: 0.85rem; text-transform: uppercase;
 }
-#account { color: var(--text); font-weight: 500; }
-@media (max-width: 760px) { #account { display: none; } } /* the initial is enough on a phone */
+@media (max-width: 760px) { .bar-label { display: none; } } /* the clock icon is enough on a phone */
 @media (max-width: 560px) { .account-bar > .spend { display: none; } } /* it's in the menu too */
 .spend.spend-warn { background: color-mix(in srgb, var(--sun) 22%, var(--card)); color: var(--text); }
 
@@ -290,6 +296,8 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .status-pill.interview { background: var(--primary-soft); color: var(--primary); }
 .status-pill.done { background: color-mix(in srgb, var(--high) 16%, var(--card)); color: var(--high); }
 .menu-foot { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.account-menu-small { width: min(300px, calc(100vw - 32px)); } /* the account menu: email, delete, log out */
+.account-menu-small .menu-foot { border-top: 0; margin-top: 0; }
 .menu-item {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
   border: 0; border-radius: 10px; background: transparent; color: var(--text);

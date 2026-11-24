@@ -47,9 +47,9 @@ How it works:
 - Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
   questions); the header says "Practice" during it. Once the practice and interviews are used, the
   setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
-- Account menu (a click on your initial, top right): your 10 latest sessions (GET /sessions; a
-  click opens one where it stands, GET /sessions/{id}), "Delete my account…" and Log out. It
-  closes on a click outside or Escape. "Delete my account…" opens a dialog: "Email me a code"
+- Header menus (top right, closed by a click outside or Escape): "Your sessions" lists your 10
+  latest sessions (GET /sessions; a click opens one where it stands, GET /sessions/{id}); your
+  initial opens the account menu: your email, "Delete my account…" and Log out. "Delete my account…" opens a dialog: "Email me a code"
   (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
 */
 
@@ -1134,31 +1134,38 @@ $("voice-toggle").checked = state.voiceOn;
 
 // ---------- login ----------
 
-// Header: your initial and email (the button that opens the account menu) when logged in
-// (user = {email, is_admin}), nothing otherwise.
+// Header: "Your sessions" and your initial (the buttons that open the two menus) when logged in
+// (user = {email, is_admin}), nothing otherwise. Your email shows only inside the account menu.
 function setAccount(user) {
   const email = user ? user.email : "";
-  $("account").textContent = email;
   $("menu-email").textContent = email;
   $("avatar").textContent = email.charAt(0);
   $("menu-avatar").textContent = email.charAt(0);
+  $("account-button").title = email;
   $("account-button").hidden = !user;
-  if (!user) { $("spend").hidden = true; closeAccountMenu(); }
+  $("sessions-button").hidden = !user;
+  if (!user) { $("spend").hidden = true; closeMenus(); }
 }
 
-// ---------- account menu: your sessions, delete my account, log out ----------
+// ---------- header menus: your sessions; your account (delete my account, log out) ----------
 
 const STATUS = { brief: "Brief", interview: "Interview", done: "Feedback ready" };
+// Each menu and the button that opens it. Only one is open at a time.
+const MENUS = { "sessions-menu": "sessions-button", "account-menu": "account-button" };
 
-function openAccountMenu() {
-  $("account-menu").hidden = false;
-  $("account-button").setAttribute("aria-expanded", "true");
-  loadSessionList();
+function openMenu(id) {
+  closeMenus();
+  $(id).hidden = false;
+  $(MENUS[id]).setAttribute("aria-expanded", "true");
+  if (id === "sessions-menu") loadSessionList();
 }
-function closeAccountMenu() {
-  $("account-menu").hidden = true;
-  $("account-button").setAttribute("aria-expanded", "false");
+function closeMenus() {
+  for (const [menu, button] of Object.entries(MENUS)) {
+    $(menu).hidden = true;
+    $(button).setAttribute("aria-expanded", "false");
+  }
 }
+const openMenuId = () => Object.keys(MENUS).find((id) => !$(id).hidden);
 
 // Your 10 latest sessions (GET /sessions), each a row you click to continue it.
 async function loadSessionList() {
@@ -1175,7 +1182,7 @@ async function loadSessionList() {
           el("span", {}, s.kind === "practice" ? "Practice" : "Interview"),
           el("span", { class: `status-pill ${s.status}` }, STATUS[s.status] || s.status),
           el("span", {}, day)));
-      row.onclick = () => { closeAccountMenu(); openSession(s.session_id); };
+      row.onclick = () => { closeMenus(); openSession(s.session_id); };
       if (s.session_id === state.sessionId) row.classList.add("current");
       return row;
     }));
@@ -1184,18 +1191,20 @@ async function loadSessionList() {
   }
 }
 
-$("account-button").addEventListener("click", () =>
-  ($("account-menu").hidden ? openAccountMenu() : closeAccountMenu()));
-// A click anywhere outside the menu, or Escape, closes it.
+for (const [menu, button] of Object.entries(MENUS)) {
+  $(button).addEventListener("click", () => ($(menu).hidden ? openMenu(menu) : closeMenus()));
+}
+// A click anywhere outside the pill and its menus, or Escape, closes the open menu.
 document.addEventListener("click", (e) => {
-  if (!$("account-menu").hidden && !e.target.closest(".account-bar")) closeAccountMenu();
+  if (openMenuId() && !e.target.closest(".account-bar")) closeMenus();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("account-menu").hidden) { closeAccountMenu(); $("account-button").focus(); }
+  const open = openMenuId();
+  if (e.key === "Escape" && open) { closeMenus(); $(MENUS[open]).focus(); }
 });
 // "Delete my account…" opens the dialog (a modal: the page behind can't be clicked).
 $("open-account-dialog").addEventListener("click", () => {
-  closeAccountMenu();
+  closeMenus();
   $("account-dialog").showModal();
 });
 $("close-account-dialog").addEventListener("click", () => $("account-dialog").close());

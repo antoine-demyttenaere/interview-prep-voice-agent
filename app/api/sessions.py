@@ -234,7 +234,7 @@ def resume_session(session_id: uuid.UUID, body: ResumeIn, request: Request, db: 
             raise HTTPException(422, "Expected a brief decision: {action: approve | edit | revise, ...}")
         if body.value.action == "revise":
             limit = get_settings().brief_revisions_max
-            if session.brief_revisions >= limit:
+            if session.brief_revisions >= limit and not user.is_admin:  # admins: no limit (Phase 4.8)
                 raise HTTPException(429, f"You have asked for changes {limit} times in this session, the limit. "
                                          "Edit the brief yourself, or approve it.")
             session.brief_revisions += 1

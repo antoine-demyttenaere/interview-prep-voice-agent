@@ -13,8 +13,8 @@ Each class is one table and each Mapped[...] attribute one column. Code works wi
 - QuestionBankItem: a seeded technical / system design question, with its embedding.
 - Session: one practice run. Its progress (questions, answers, scores) is not stored here: it is
   in LangGraph's checkpoint tables, under the session's thread_id.
-- User: one account, known by its email (there are no passwords: you log in with a code sent by
-  email). LoginSession: one logged-in browser or CLI run; its token lives in a cookie and only a
+- User: one account, known by its email (you log in with a code sent by email; an admin can
+  also have a password, Phase 4.8). LoginSession: one logged-in browser or CLI run; its token lives in a cookie and only a
   hash of it is stored here (app/auth/ uses both). Not to be confused with Session above, which
   is a practice run.
 - EmailCode: one 6-digit code sent by email to log in (or to confirm deleting an account); only
@@ -149,6 +149,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # first code login
+    password_hash: Mapped[str | None] = mapped_column(String(200))  # admins only (Phase 4.8): Argon2
     # How many sessions of each kind this person may start in all (Phase 4.7; admins have no
     # quota). They never reset by themselves: manage_users.py grant adds more.
     practice_quota: Mapped[int] = mapped_column(Integer, default=1)

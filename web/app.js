@@ -7,7 +7,8 @@ How it works:
   code (POST /auth/verify sets the cookie, and creates the account the first time; the browser
   then sends the cookie with every request by itself, and page scripts can't read it). There
   are no passwords. Any 401 later (login expired, account disabled) brings the login screen
-  back, and logging in again continues where you were. "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
+  back, and logging in again continues where you were. An admin can instead use "Admin? Log in
+  with a password" (POST /auth/password-login, Phase 4.8). "Log out" calls POST /auth/logout, forgets this browser's session id and draft, and
   reloads the page.
 - Every screen comes from a "view" the API returns (status + what the session is waiting for).
   render(view) shows the right panel: brief review, interview, or feedback.
@@ -112,7 +113,7 @@ async function api(method, path, body, isForm = false) {
   const res = await fetch(path, options);
   // 401 = not logged in (any more): show the login screen. A wrong code on the login form is
   // also a 401, but that one is shown as a normal error.
-  if (res.status === 401 && path !== "/auth/verify") {
+  if (res.status === 401 && path !== "/auth/verify" && path !== "/auth/password-login") {
     showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
     const err = new Error("Please log in.");
     err.status = 401;
@@ -1022,7 +1023,8 @@ function setAccount(user) {
   if (!user) $("spend").hidden = true;
 }
 
-// The login panel holds two forms: "login" (your email) and "code" (the code it received).
+// The login panel holds three forms: "login" (your email), "code" (the code it received) and
+// "password" (admins only).
 function showLogin(message = "", form = "login") {
   if (state.audio) state.audio.pause();
   setAccount(null);
@@ -1031,8 +1033,9 @@ function showLogin(message = "", form = "login") {
   showPanel("login");
   $("login-form").hidden = form !== "login";
   $("code-form").hidden = form !== "code";
+  $("password-form").hidden = form !== "password";
   showError(message);
-  (form === "code" ? $("login-code") : $("login-email")).focus();
+  ({ code: $("login-code"), password: $("password-email") }[form] || $("login-email")).focus();
 }
 
 async function sendLoginCode() {
@@ -1049,6 +1052,24 @@ $("login-form").addEventListener("submit", (e) => {
 });
 $("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", sendLoginCode); });
 $("other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+$("to-password").addEventListener("click", (e) => {
+  e.preventDefault();
+  $("password-email").value = $("login-email").value;
+  showLogin("", "password");
+});
+$("to-code").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+
+$("password-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  run("Logging in...", async () => {
+    const user = await api("POST", "/auth/password-login",
+      { email: $("password-email").value.trim(), password: $("password-input").value });
+    $("password-input").value = "";
+    setAccount(user);
+    showError("");
+    await startApp();
+  });
+});
 
 // The month's spend in the header, and the recording limit. Failing to load it is not an error.
 const dollars = (x) => `$${x.toFixed(2)}`;

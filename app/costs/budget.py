@@ -16,7 +16,7 @@ The rules, all set in .env (app/config.py):
 - Quotas, per account (Phase 4.7): users.practice_quota (1) and users.interview_quota (2), in
   all, never reset by themselves (manage_users.py grant adds more). A new session is a practice
   while one is left, then an interview (session_kind). Admins have no quota.
-- Per user: at most INTERVIEWS_PER_DAY (4) sessions per UTC day.
+- Per user: at most INTERVIEWS_PER_DAY (4) sessions per UTC day (not for admins, Phase 4.8).
   A session counts (for the quotas and the daily limit) once its questions are planned
   (sessions.questions_started_at), so writing and revising a brief doesn't use one up.
 - At BUDGET_WARN_RATIO (80%) of any budget, status() says so; the page shows it to the admin.
@@ -144,10 +144,10 @@ def interviews_today(db: DB, user: User) -> int:
 
 def check_can_start_interview(db: DB, user: User, kind: str = "interview") -> None:
     """Before the questions are planned: budgets (503), this user's quota, then their sessions today (429)."""
-    check_budget(db, kind)
+    check_budget(db, kind)  # the budgets apply to everyone, admins too
     check_quota(db, user, kind)
     limit = get_settings().interviews_per_day
-    if interviews_today(db, user) >= limit:
+    if not user.is_admin and interviews_today(db, user) >= limit:
         raise HTTPException(429, f"You have done {limit} interviews today, the daily limit. "
                                  "You can start a new one tomorrow (UTC); your briefs are kept.")
 

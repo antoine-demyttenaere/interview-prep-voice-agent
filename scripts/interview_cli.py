@@ -22,6 +22,8 @@ INTERVIEW_EMAIL), the server emails you a 6-digit code (locally it is printed in
 which the script sends back with every request (the `Cookie` header), like a browser does, and
 saves in ~/.interview_cli_login (your home folder, not the project), so the next runs don't
 ask again until it expires (30 days) or you log out on the server. Delete that file to log out.
+An admin with a password (Phase 4.8) can set INTERVIEW_EMAIL and INTERVIEW_PASSWORD instead:
+the script then logs in with the password and no code is needed.
 A new email also creates the account, as on the web page.
 """
 
@@ -87,9 +89,14 @@ def login() -> None:
             COOKIE.clear()  # expired or logged out: ask for a new code
 
     email = os.getenv("INTERVIEW_EMAIL") or input("Email: ")
-    print(json.loads(_post_json("/auth/start", {"email": email}).read())["detail"])
-    code = input("Code from the email: ")
-    with _post_json("/auth/verify", {"email": email, "code": code}) as resp:
+    password = os.getenv("INTERVIEW_PASSWORD")
+    if password:  # admins only
+        resp = _post_json("/auth/password-login", {"email": email, "password": password})
+    else:
+        print(json.loads(_post_json("/auth/start", {"email": email}).read())["detail"])
+        code = input("Code from the email: ")
+        resp = _post_json("/auth/verify", {"email": email, "code": code})
+    with resp:
         for header in resp.headers.get_all("Set-Cookie") or []:
             if header.startswith("login="):
                 COOKIE["Cookie"] = header.split(";", 1)[0]  # "login=<token>", without its options

@@ -3,6 +3,7 @@
 - POST /auth/start        {email} -> emails a 6-digit login code; always the same answer (202)
 - POST /auth/verify       {email, code} -> checks it, creates the account the first time, logs in
                           (sets the "login" cookie), returns {email, is_admin, new_account}
+- POST /auth/password-login {email, password} -> admins only (Phase 4.8): same cookie as a code login
 - POST /auth/logout       deletes this login (the cookie stops working at once) and clears it
 - GET  /auth/me           {email, is_admin} of the logged-in user, or 401
 - POST /auth/delete-code  emails a code to confirm deleting your account
@@ -12,8 +13,11 @@ Mounted by app/main.py. Uses codes.py (the codes), limits.py (too many attempts:
 (who is logged in) and app/mail (sending the email). The web page (web/app.js) and the terminal
 client (scripts/interview_cli.py) both call these routes.
 
-There are no passwords (Phase 4.7): typing the code back proves the inbox is yours, so the same
-two steps sign up a new person and log in an existing one. Anyone with a real inbox can sign up;
+Most people have no password (Phase 4.7): typing the code back proves the inbox is yours, so the
+same two steps sign up a new person and log in an existing one. An admin can also set a password
+(Phase 4.8, scripts/manage_users.py set-password) and log in with it; a wrong password, a
+non-admin email and an admin without a password all get the same answer, so the form doesn't
+reveal who is an admin. The code login keeps working for admins too, as a fallback. Anyone with a real inbox can sign up;
 quotas and budgets (app/costs/) decide what they can use.
 
 What "send me a code" answers never depends on the email: a new address, an existing account
@@ -39,6 +43,7 @@ from app.auth import limits
 from app.auth.account import delete_account
 from app.auth.codes import check_code, issue_code
 from app.auth.deps import current_login, current_user
+from app.auth.passwords import check_password, hash_password, needs_rehash
 from app.auth.tokens import COOKIE_NAME, hash_token, new_token
 from app.config import get_settings
 from app.db.models import LoginSession, User
@@ -49,6 +54,7 @@ router = APIRouter(prefix="/auth", tags=["accounts"])
 
 CODE_SENT = "If this email can be used, a code is on its way. Check your inbox (and spam folder)."
 WRONG_CODE = "This code is wrong or has expired. Check the latest email, or ask for a new code."
+WRONG_PASSWORD = "Wrong email or password. (Password login is for admins; everyone else uses a code.)"
 EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # something@something.something
 
 
@@ -138,6 +144,28 @@ def verify(body: VerifyIn, request: Request, response: Response, db: DB = Depend
     limits.clear_login_failures(db, email)
     _start_login(db, user, response)  # commits the new account and the login together
     return {**user_out(user), "new_account": new_account}
+
+
+class PasswordLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/password-login")
+def password_login(body: PasswordLoginIn, request: Request, response: Response, db: DB = Depends(get_db)) -> dict:
+    """Admins only: log in with the password set by manage_users.py set-password."""
+    email, ip = _valid_email(body.email), limits.client_ip(request)
+    limits.check_login(db, email, ip)  # 429 once there were too many wrong attempts
+    user = db.scalar(select(User).where(User.email == email))
+    stored = user.password_hash if (user and user.is_admin and not user.disabled_at) else None
+    if not check_password(stored, body.password):  # same work and answer whatever the reason
+        limits.record(db, "login_failed", ip, email)
+        raise HTTPException(401, WRONG_PASSWORD)
+    if needs_rehash(stored):
+        user.password_hash = hash_password(body.password)
+    limits.clear_login_failures(db, email)
+    _start_login(db, user, response)
+    return {**user_out(user), "new_account": False}
 
 
 @router.post("/logout", status_code=204)

@@ -71,7 +71,7 @@ docker compose up -d           # applies migrations, seeds the question bank, st
 docker compose exec api python scripts/create_user.py --email you@example.com --admin   # your admin account
 ```
 
-Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) and enter your email. There are no passwords: the app emails you a 6-digit code. Locally nothing is sent; the email is printed in `docker compose logs api`, where you read the code. Anyone can sign up the same way with their own email. The API docs are at http://localhost:8000/docs.
+Open http://localhost:8000 (Chrome, Edge or Firefox; allow the microphone) and enter your email. There are no passwords for users: the app emails you a 6-digit code (as admin, you can also set a password with `scripts/manage_users.py set-password` and use "Admin? Log in with a password"). Locally nothing is sent; the email is printed in `docker compose logs api`, where you read the code. Anyone can sign up the same way with their own email. The API docs are at http://localhost:8000/docs.
 
 `scripts/manage_users.py` lists accounts, and can disable, enable or delete one.
 
@@ -107,6 +107,7 @@ The app is meant to run on your own machine, and both ports are bound to `127.0.
 | 4: evals in LangSmith | in progress (answer-scoring eval done) |
 | 4.6: accounts, each user sees only their own data | built |
 | 4.7: sign up with an emailed code, 1 practice, 2 interviews, "Request more" | built (real email sending comes with Phase 5) |
+| 4.8: admin login with a password, no per-user limits for admins | built |
 | 4.5: cost control, per user | built |
 | 5: deployment on AWS with Terraform | planned |
 | 6: streaming, live turn detection, personas | planned |

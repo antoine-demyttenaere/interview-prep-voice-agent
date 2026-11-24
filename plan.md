@@ -41,7 +41,7 @@ Claude does the reasoning. The speech, voice and embedding providers each sit be
 | API | FastAPI (Python) | Decided | Async, simple |
 | Tracing and evals | LangSmith | Decided | Traces, datasets, evaluators |
 | Local run | Docker Compose | Decided | `api` + `db` (pgvector image) |
-| Cloud | AWS: ECS Fargate, RDS, S3, ECR, ALB, Secrets Manager | Decided | |
+| Cloud | AWS `eu-west-1` (Ireland): one EC2 t4g.micro running the Compose file behind Caddy (HTTPS); SSM Parameter Store, SES, GitHub's registry (GHCR) | Decided 2026-11-24 | About $11 a month on demand, fully in Terraform; it teaches the building blocks (VPC, security groups, IAM roles, EBS). ECS + RDS + ALB (~$45-60) stays a later option |
 | Infrastructure as code | Terraform | Decided | State in S3 |
 | Email (login codes, Phase 4.7) | "console" provider locally (the code is printed in the server logs); Amazon SES on AWS | Decided | Behind an interface like speech; SES fits the AWS stack, about $0.10 per 1,000 emails |
 | Local machine | Windows, PowerShell, Docker Desktop | Given | Scripts in PowerShell |
@@ -166,7 +166,7 @@ Email  ->  6-digit code by email  ->  logged in (account created the first time)
 
 ## Cost control
 
-All paid APIs together stay under **$10 a month** (AWS hosting is budgeted separately in Phase 5). At about $0.50 per spoken interview, that is about 20 interviews a month.
+All paid APIs together stay under **$10 a month** (AWS hosting is budgeted separately: about $11 a month, Phase 5). At about $0.50 per spoken interview, that is about 20 interviews a month.
 
 **Estimated cost of one spoken interview** (5 questions, about 10 turns, 15 minutes of answers). Prices are approximate as of November 2026; confirm them on each provider's pricing page.
 
@@ -289,14 +289,33 @@ Details in [From Phase 4.7](#from-phase-47-sign-up-with-an-email-code-one-practi
 
 **Check:** a new person signs up with their email, does 1 practice and 2 interviews with their own documents, is offered "Request more", and gets more after I grant them.
 
-### Phase 5: AWS with Terraform
-- [ ] Terraform modules: network, ECR, ECS Fargate, RDS Postgres (pgvector), S3 for uploads, ALB with HTTPS, Secrets Manager
-- [ ] Terraform state in S3; deploys through GitHub Actions
-- [ ] Accounts from Phase 4.6 behind HTTPS (`COOKIE_SECURE=true`); uvicorn `--proxy-headers --forwarded-allow-ips` set to the load balancer, so the guessing limits see each caller's IP instead of the balancer's; Cognito only if the built-in accounts stop being enough
-- [ ] Email through Amazon SES: the SES provider in `app/mail` (with `boto3`), domain verified, out of the SES sandbox; `SECRET_KEY` in Secrets Manager and Cloudflare Turnstile before a login code is sent (Phase 4.7)
-- [ ] Cheaper fallback: one EC2 instance running the same Compose file behind Caddy
+### Phase 4.8: Admin login with a password, without per-user limits
 
-**Check:** a voice interview works on the public HTTPS URL (the mic requires HTTPS outside localhost).
+Decided 2026-11-24. Everyone else keeps logging in with an emailed code; my admin account can also log in with an email and a password, so I don't depend on reading codes, and it isn't held back by per-user limits.
+
+- [x] **Password for admins only:** `users.password_hash` (optional, migration 0012), Argon2 (`argon2-cffi`), at least 12 characters; `manage_users.py set-password EMAIL` / `clear-password EMAIL` (admins only), `create_user.py --admin` offers to set one; `POST /auth/password-login`, with the same answer for a wrong password, a non-admin email and an admin without a password, and the existing limits (5 wrong per email, 20 per IP, per 15 minutes); a small "Admin? Log in with a password" form on the login screen; the CLI uses `INTERVIEW_PASSWORD` when set. The code login stays as a fallback.
+- [x] **No per-user limits for admins:** besides having no quota (already), an admin skips the interviews-per-day limit and the brief-revisions limit. The global budgets and the size limits (questions, recording, documents, CV) still apply to everyone: they protect against runaway costs and mistakes.
+- [x] Tests; HOW_IT_WORKS.md, README and CLAUDE.md updated.
+
+**Check:** I set my password, log in with it, start more than 4 interviews in a day and ask for more than 3 brief revisions; a wrong password 6 times is blocked; a non-admin can't log in with a password.
+
+### Phase 5: AWS with Terraform (one EC2 server)
+
+Decided 2026-11-24: **EC2 t4g.micro in `eu-west-1` (Ireland)**, everything in Terraform, chosen for learning (VPC, subnets, security groups, IAM roles, EBS, AMIs, user data, Session Manager are the building blocks under ECS and most AWS work) and cost. The server runs the same Compose file as my laptop: the app, Postgres and Caddy (automatic HTTPS from Let's Encrypt).
+
+**Cost** (AWS Pricing API, November 2026, on demand): server $6.72 ($0.0092 / hour), 10 GB gp3 disk $0.88, public IPv4 (Elastic IP) $3.65, weekly snapshots and DNS about $1-1.50: **about $11-12 a month**. To stay at or below $10: stop the server when I'm not using it while I learn (only the disk and IP are billed, about $5), and take a 1-year Compute Savings Plan (about 35% off the server) once it serves real users. Ireland costs the same as Spain (`eu-south-2`, an opt-in region) and is the most complete EU region. An AWS Budget emails me at $10. The API budgets of Phase 4.5 stay as they are.
+
+**Risk:** 1 GB of memory shared by the app, Postgres and Caddy. Step 1 measures it; a 2 GB swap file is the safety margin; if it doesn't fit, t4g.small (2 GB) brings the total to about $19 a month.
+
+- [ ] **Step 1, the app in production mode (no AWS cost):** `docker-compose.prod.yml` (the app from its image, no source mount, no `--reload`; Postgres not reachable from outside; Caddy the only thing on ports 80 / 443); `COOKIE_SECURE=true`; uvicorn `--proxy-headers` trusting only Caddy, so the guessing limits see each visitor's IP; the server refuses to start without `SECRET_KEY` in production; the Amazon SES provider in `app/mail` (`boto3`, credentials from the server's IAM role, no keys); Cloudflare Turnstile on "Send me a code" (off locally); memory measured with `docker stats` and capped (Postgres tuned small). Personal files already left out of the image (`.dockerignore`). Check: tests pass; the production Compose file runs on my laptop.
+- [ ] **Step 2, Terraform:** `infra/bootstrap` (the S3 bucket for Terraform's state: versioned, encrypted, private, with S3 locking); `infra/` (a VPC with one public subnet and an internet gateway; a security group open only on 80 and 443, **no SSH**; an IAM role for the server: Session Manager, send email with SES, read its own SSM parameters; EC2 t4g.micro on Amazon Linux 2023 arm64, IMDSv2 required, encrypted 10 GB gp3 disk, an Elastic IP; user data that installs Docker, a swap file and automatic security updates, then starts the Compose file; weekly snapshots kept 4 weeks (Data Lifecycle Manager); SSM parameters for the API keys and `SECRET_KEY`, whose values I type with the AWS CLI so they never sit in Terraform's state; the AWS Budget). Check: `terraform apply`, then `/health` answers through the Elastic IP; a shell opens with Session Manager.
+- [ ] **Step 3, domain, HTTPS and email:** a DNS record for the Elastic IP, Caddy's certificate, `COOKIE_SECURE=true` live; SES domain identity with DKIM records, then the request to leave the SES sandbox; Turnstile keys for the domain. Check: the page loads over HTTPS and a login code arrives in a real inbox.
+- [ ] **Step 4, deploys from GitHub Actions:** build the `arm64` image on GitHub's ARM runner, push it to GHCR, then update the server through SSM Run Command; GitHub logs in to AWS with **OIDC** (short-lived credentials, a role allowed only to deploy), so no AWS keys are stored in the public repo. Check: a push to `main` is live a few minutes later.
+- [ ] **Step 5, run it:** restore a snapshot once on a test server; document start / stop / restore / costs in HOW_IT_WORKS.md.
+
+**Check:** a voice interview works on the public HTTPS URL (the mic requires HTTPS outside localhost), a new person signs up with a real emailed code, and the month's AWS bill stays around $11.
+
+**Later options:** ECS Fargate + RDS + ALB (managed database and containers, about $45-60 a month); CloudWatch logs and alarms.
 
 ### Phase 6: Improvements (order to decide)
 - [ ] Streaming over WebSocket, sentence-by-sentence text-to-speech
@@ -321,7 +340,7 @@ prompts/        # one file per mode and node
 rubrics/        # YAML scoring rubrics
 evals/          # datasets + evaluators
 web/            # index.html + app.js
-infra/          # Terraform modules (Phase 5)
+infra/          # Terraform (Phase 5): bootstrap/ (state bucket), then the network, server, IAM, DNS, SES, budget
 scripts/        # PowerShell helpers
 docker-compose.yml
 .env.example

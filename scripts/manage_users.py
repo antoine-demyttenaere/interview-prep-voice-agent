@@ -4,6 +4,8 @@
     docker compose exec api python scripts/manage_users.py disable EMAIL   can't log in; logged out now
     docker compose exec api python scripts/manage_users.py enable EMAIL    can log in again
     docker compose exec api python scripts/manage_users.py delete EMAIL    the account and all its data
+    docker compose exec api python scripts/manage_users.py set-password EMAIL    admins only: asks for it twice
+    docker compose exec api python scripts/manage_users.py clear-password EMAIL  back to code login only
     docker compose exec api python scripts/manage_users.py requests        pending "Request more" requests
     docker compose exec api python scripts/manage_users.py grant EMAIL --interviews 2 [--practices 1]
 
@@ -17,11 +19,18 @@
 - grant adds practices and / or interviews to an account's quota (they never reset by
   themselves), closes its pending requests and emails the person (app/api/usage.py grant_more).
 
-There are no passwords to reset: everyone logs in with a code sent by email (Phase 4.7). Admin
-accounts are made with create_user.py --admin. Uses the same tables as the app (app/db/models.py).
+- set-password (Phase 4.8) gives an admin account a password (at least 12 characters, typed
+  twice without being shown; or NEW_PASSWORD for a script), so it can log in with "Admin? Log in
+  with a password" instead of an emailed code. Only its Argon2 hash is stored, and the account's
+  other logins end. It refuses non-admin accounts: everyone else logs in with a code.
+  clear-password removes it.
+
+Everyone can log in with a code sent by email (Phase 4.7); a forgotten admin password is just set
+again here. Admin accounts are made with create_user.py --admin. Uses the same tables as the app (app/db/models.py).
 """
 
 import argparse
+import getpass
 import os
 import sys
 from datetime import datetime, timezone
@@ -32,6 +41,7 @@ from sqlalchemy import delete, func, select  # noqa: E402
 from sqlalchemy.orm import Session as DB  # noqa: E402
 
 from app.auth.account import delete_account  # noqa: E402
+from app.auth.passwords import hash_password, password_problem  # noqa: E402
 from app.auth.routes import normalize_email  # noqa: E402
 from app.api.usage import grant_more  # noqa: E402
 from app.costs import budget  # noqa: E402
@@ -62,6 +72,27 @@ def list_users(db: DB) -> None:
               f"{_day(u.email_verified_at):10} {quota:>10} {documents.get(u.id, 0):>9}")
 
 
+def ask_new_password() -> str:
+    password = os.environ.get("NEW_PASSWORD")
+    if password is None:
+        password = getpass.getpass("New password: ")
+        if getpass.getpass("Same password again: ") != password:
+            sys.exit("The two passwords differ. Nothing changed.")
+    problem = password_problem(password)
+    if problem:
+        sys.exit(problem)
+    return password
+
+
+def set_password(db: DB, user: User) -> None:
+    if not user.is_admin:
+        sys.exit(f"{user.email} is not an admin: only admins can have a password (others log in with a code).")
+    user.password_hash = hash_password(ask_new_password())
+    db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))  # other logins end
+    db.commit()
+    print(f"Password set for {user.email}. Log in with \"Admin? Log in with a password\" on the login screen.")
+
+
 def list_requests(db: DB) -> None:
     rows = db.execute(select(AccessRequest, User.email).join(User, AccessRequest.user_id == User.id)
                       .where(AccessRequest.handled_at.is_(None)).order_by(AccessRequest.created_at)).all()
@@ -82,13 +113,22 @@ def main() -> int:
     grant.add_argument("--interviews", type=int, default=0)
     grant.add_argument("--practices", type=int, default=0)
     for name, text in [("disable", "refuse logins and log out everywhere"), ("enable", "allow logins again"),
-                       ("delete", "delete the account and all its data")]:
+                       ("delete", "delete the account and all its data"),
+                       ("set-password", "admins only: set a password (asked twice)"),
+                       ("clear-password", "remove a password: back to code login only")]:
         sub.add_parser(name, help=text).add_argument("email")
     args = parser.parse_args()
 
     with DB(get_engine()) as db:
         if args.cmd == "list":
             list_users(db)
+        elif args.cmd == "set-password":
+            set_password(db, _user(db, args.email))
+        elif args.cmd == "clear-password":
+            user = _user(db, args.email)
+            user.password_hash = None
+            db.commit()
+            print(f"{user.email} has no password any more: they log in with a code.")
         elif args.cmd == "requests":
             list_requests(db)
         elif args.cmd == "grant":

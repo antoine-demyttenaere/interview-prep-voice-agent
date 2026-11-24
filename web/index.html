@@ -6,7 +6,8 @@ The page only shows things and sends requests to the API; app.js holds the logic
 style.css the look. There are five panels, and app.js shows one at a time:
   0. login     - your email, then the 6-digit code it receives (no passwords; a new email
                  creates the account), with a short note on where your data goes. Shown first
-                 when you aren't logged in, and whenever the API answers 401 (your login ended)
+                 when you aren't logged in, and whenever the API answers 401 (your login ended).
+                 "Admin? Log in with a password" opens an email + password form (admins only)
   1. setup     - a 3-step form you move through from left to right (Next / Back, swipe, or click
                  the step bar): the interview, the company and the job (texts, links, files),
                  your CV, then "Prepare my interview brief".
@@ -79,6 +80,20 @@ No build step and no framework: edit a file, reload the page.
           server; copies already sent to those services follow their own retention rules.
         </p>
         <button type="submit" class="btn btn-primary btn-large">Send me a code</button>
+        <p class="hint auth-note"><a href="#" id="to-password">Admin? Log in with a password</a></p>
+      </form>
+
+      <form id="password-form" class="panel auth-card" hidden>
+        <h2>Admin login</h2>
+        <p class="hint">For admin accounts with a password. Everyone else logs in with a code.</p>
+        <label>Email
+          <input id="password-email" name="email" type="email" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="btn btn-primary btn-large">Log in</button>
+        <p class="hint auth-note"><a href="#" id="to-code">Log in with a code instead</a></p>
       </form>
 
       <form id="code-form" class="panel auth-card" hidden>

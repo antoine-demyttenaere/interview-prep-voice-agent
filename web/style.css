@@ -26,6 +26,9 @@ style.css - the look of the web page (web/index.html).
   (.card-icon, .slide-icon, .file-tile, .num, step numbers); page titles end in a coral dot
   (h2::after); the logo's sound bars (.waves) are on the record button and in the floating
   "working" pill (.busy, bottom centre). Only buttons use gradients; everything else is solid.
+- Top right, once logged in: one white pill (what's left, your initial and email); a click on the
+  initial opens the account menu (.account-menu: your sessions, Delete my account, Log out), and
+  "Delete my account" is a modal <dialog> (.account-dialog) over a dimmed page.
 - The login screens (your email, then the code or an admin's password) are one narrow white card
   in the middle of the page (.auth-card), with the app icon on top and Google's button below.
 - Layout: the setup is a 3-step form shown one step at a time (.wizard). From 960px wide, the
@@ -218,16 +221,27 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card .google-button { display: flex; justify-content: center; min-height: 44px; }
 /* what's left (a user) or the month's budget (an admin) in the header; Sun tint when a budget is at 80% or more */
 .spend { color: var(--muted); padding: 4px 12px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
-/* Once logged in, the top right holds one white pill: what's left, your initial in an indigo
-   circle, your email, and Log out. It disappears when everything in it is hidden (logged out). */
+/* Once logged in, the top right holds one white pill: what's left, then a button with your
+   initial (an indigo circle), your email and a chevron, which opens the account menu below. The
+   pill disappears when everything in it is hidden (logged out). */
 .account-bar {
-  display: flex; align-items: center; gap: 10px; padding: 4px 4px 4px 6px;
+  position: relative; /* the menu is placed under it */
+  display: flex; align-items: center; gap: 8px; padding: 4px;
   border-radius: 999px; background: var(--card); border: 1px solid var(--border);
   box-shadow: 0 2px 10px color-mix(in srgb, var(--indigo) 8%, transparent);
 }
 .account-bar:not(:has(> :not([hidden]))) { display: none; }
-.account-bar [hidden] { display: none; }
-.account-bar .btn-ghost { box-shadow: none; }
+.account-bar [hidden] { display: none !important; }
+.account-bar > .spend { margin-left: 2px; }
+.account-button {
+  display: flex; align-items: center; gap: 8px; padding: 2px 12px 2px 2px;
+  border: 0; border-radius: 999px; background: transparent; color: var(--text);
+  font: inherit; cursor: pointer; transition: background 0.15s;
+}
+.account-button:hover, .account-button[aria-expanded="true"] { background: var(--primary-soft); }
+.account-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 40%, transparent); outline-offset: 2px; }
+.account-button .chevron { width: 16px; height: 16px; fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.2s; }
+.account-button[aria-expanded="true"] .chevron { transform: rotate(180deg); }
 .avatar {
   display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%;
   background: var(--primary); color: #fff;
@@ -235,12 +249,72 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 }
 #account { color: var(--text); font-weight: 500; }
 @media (max-width: 760px) { #account { display: none; } } /* the initial is enough on a phone */
+@media (max-width: 560px) { .account-bar > .spend { display: none; } } /* it's in the menu too */
 .spend.spend-warn { background: color-mix(in srgb, var(--sun) 22%, var(--card)); color: var(--text); }
-/* "Your account" box at the bottom of the setup page */
-.account-form + .account-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
-.account-form h3 { margin: 12px 0 8px; }
-.account-form .inline { flex-wrap: wrap; }
-.account-form .inline input { flex: 1 1 200px; }
+
+/* The account menu: a white card under the pill, right-aligned. Top: your initial, email and
+   what's left; then your latest sessions; then "Delete my account..." and Log out. */
+.account-menu {
+  position: absolute; top: calc(100% + 10px); right: 0; z-index: 30;
+  width: min(380px, calc(100vw - 32px)); padding: 8px;
+  border-radius: 16px; background: var(--card); border: 1px solid var(--border);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--indigo) 22%, transparent);
+  animation: menu-in 0.15s ease-out;
+}
+@keyframes menu-in { from { opacity: 0; transform: translateY(-6px); } }
+/* on a phone the pill is small, so the menu spans the screen (16px from each edge) instead */
+@media (max-width: 560px) { .account-menu { position: fixed; top: 64px; left: 16px; right: 16px; width: auto; } }
+.menu-head { display: flex; align-items: center; gap: 12px; padding: 8px 10px 12px; border-bottom: 1px solid var(--border); }
+.menu-head .avatar { width: 40px; height: 40px; font-size: 1rem; }
+.menu-head > span:last-child { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.menu-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-label {
+  margin: 12px 10px 6px; color: var(--muted); font-family: var(--font-heading);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.session-list { max-height: min(340px, 50vh); overflow-y: auto; }
+.session-list > p { margin: 4px 10px 10px; }
+/* one session: "Company · Role", then practice or interview, a status pill and the day */
+.session-row {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 9px 10px;
+  border: 0; border-radius: 10px; background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer; transition: background 0.15s;
+}
+.session-row:hover, .session-row:focus-visible { background: var(--primary-soft); outline: none; }
+.session-row.current { box-shadow: inset 3px 0 0 var(--primary); }
+.session-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; }
+.session-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.82rem; }
+/* the status, in the palette: brief = Sky, interview = Indigo, feedback ready = Teal */
+.status-pill { padding: 0 8px; border-radius: 999px; font-weight: 600; }
+.status-pill.brief { background: color-mix(in srgb, var(--sky) 16%, var(--card)); color: color-mix(in srgb, var(--sky) 70%, var(--text)); }
+.status-pill.interview { background: var(--primary-soft); color: var(--primary); }
+.status-pill.done { background: color-mix(in srgb, var(--high) 16%, var(--card)); color: var(--high); }
+.menu-foot { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+  border: 0; border-radius: 10px; background: transparent; color: var(--text);
+  font: inherit; font-weight: 500; text-align: left; cursor: pointer; transition: background 0.15s;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--primary-soft); outline: none; }
+.menu-item svg { width: 18px; height: 18px; fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.menu-item:disabled { opacity: 0.5; cursor: default; }
+
+/* "Delete my account" dialog: a white card in the middle of the window over a dimmed page
+   (::backdrop), with a coral icon tile; the code field and the buttons stacked */
+.account-dialog {
+  width: min(460px, calc(100vw - 32px)); padding: 22px 24px; border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--coral) 30%, var(--border));
+  background: var(--card); color: var(--text);
+  box-shadow: 0 24px 60px color-mix(in srgb, var(--midnight) 35%, transparent);
+}
+.account-dialog::backdrop { background: color-mix(in srgb, var(--midnight) 45%, transparent); }
+.account-dialog .card-icon { background: var(--coral); box-shadow: 0 4px 12px color-mix(in srgb, var(--coral) 30%, transparent); }
+.account-dialog h3 { margin: 0; font-size: 1.15rem; }
+.account-dialog .error { position: static; }
+.account-form { display: flex; flex-direction: column; gap: 12px; }
+.account-form .card-head { margin-bottom: 4px; }
+.account-form input { margin: 0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 .auth-card input[name="code"] { font-family: var(--font-heading); font-size: 1.4rem; letter-spacing: 0.3em; text-align: center; }
 .muted { color: var(--muted); font-weight: 400; }
 .small { font-size: 0.9rem; }
@@ -520,7 +594,6 @@ input:focus, select:focus, textarea:focus {
 }
 .wizard-nav p { flex: 1; margin: 0; text-align: center; font-size: 1rem; }
 .wizard-nav .btn { min-width: 190px; padding: 14px 30px; font-size: 1.12rem; }
-.resume.panel { margin-top: 16px; padding: 14px 20px; }
 .editing {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 16px; border-radius: 10px; background: var(--primary-soft); border: 1px solid var(--primary);
@@ -575,7 +648,6 @@ input:focus, select:focus, textarea:focus {
 .stored-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* checkboxes in the palette's indigo */
 input[type="checkbox"] { accent-color: var(--primary); width: 18px; height: 18px; }
-.resume summary { cursor: pointer; color: var(--muted); }
 
 /* ---------- brief ---------- */
 

@@ -47,8 +47,10 @@ How it works:
 - Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
   questions); the header says "Practice" during it. Once the practice and interviews are used, the
   setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
-- "Your account" (bottom of the setup page): delete the account and all its data: "Email me a
-  code" (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
+- Account menu (a click on your initial, top right): your 10 latest sessions (GET /sessions; a
+  click opens one where it stands, GET /sessions/{id}), "Delete my account…" and Log out. It
+  closes on a click outside or Escape. "Delete my account…" opens a dialog: "Email me a code"
+  (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
 */
 
 const $ = (id) => document.getElementById(id);
@@ -75,9 +77,13 @@ function recall(key) {
   try { return localStorage.getItem(key); } catch (_) { return null; }
 }
 
+// Errors show at the top of the page, and also inside the "Delete my account" dialog while it is
+// open (a modal dialog covers the page, so the top message would be hidden behind it).
 function showError(message) {
-  $("error").textContent = message;
-  $("error").hidden = !message;
+  for (const box of [$("error"), $("dialog-error")]) {
+    box.textContent = message;
+    box.hidden = !message;
+  }
 }
 
 function busy(text) {
@@ -652,7 +658,7 @@ window.addEventListener("resize", fitTrack);
 
 // Enter in a one-line field = Next (or "Write my brief" on the last step); Enter in a text area adds a line.
 $("setup-form").addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.id === "resume-id") return;
+  if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
   e.preventDefault();
   if (wizard.step < wizard.count - 1) nextStep();
   else $("setup-form").requestSubmit($("wizard-submit"));
@@ -763,15 +769,10 @@ $("setup-form").addEventListener("submit", (e) => {
   });
 });
 
-function resumeById() {
-  const id = $("resume-id").value.trim();
-  if (!id) return showError("Paste a session id first.");
+// Open one of your sessions (from the account menu's list) where it stands.
+function openSession(id) {
   run("Loading the session...", async () => render(await api("GET", `/sessions/${id}`)));
 }
-$("resume").addEventListener("click", resumeById);
-$("resume-id").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); resumeById(); } // don't submit the setup form
-});
 
 // ---------- brief review ----------
 
@@ -1133,16 +1134,72 @@ $("voice-toggle").checked = state.voiceOn;
 
 // ---------- login ----------
 
-// Header: your initial, your email and "Log out" when logged in (user = {email, is_admin}),
-// nothing otherwise.
+// Header: your initial and email (the button that opens the account menu) when logged in
+// (user = {email, is_admin}), nothing otherwise.
 function setAccount(user) {
-  $("account").textContent = user ? user.email : "";
-  $("avatar").textContent = user ? user.email.charAt(0) : "";
-  $("account").hidden = !user;
-  $("avatar").hidden = !user;
-  $("logout").hidden = !user;
-  if (!user) $("spend").hidden = true;
+  const email = user ? user.email : "";
+  $("account").textContent = email;
+  $("menu-email").textContent = email;
+  $("avatar").textContent = email.charAt(0);
+  $("menu-avatar").textContent = email.charAt(0);
+  $("account-button").hidden = !user;
+  if (!user) { $("spend").hidden = true; closeAccountMenu(); }
 }
+
+// ---------- account menu: your sessions, delete my account, log out ----------
+
+const STATUS = { brief: "Brief", interview: "Interview", done: "Feedback ready" };
+
+function openAccountMenu() {
+  $("account-menu").hidden = false;
+  $("account-button").setAttribute("aria-expanded", "true");
+  loadSessionList();
+}
+function closeAccountMenu() {
+  $("account-menu").hidden = true;
+  $("account-button").setAttribute("aria-expanded", "false");
+}
+
+// Your 10 latest sessions (GET /sessions), each a row you click to continue it.
+async function loadSessionList() {
+  const box = $("session-list");
+  box.replaceChildren(el("p", { class: "muted small" }, "Loading..."));
+  try {
+    const rows = await api("GET", "/sessions");
+    if (!rows.length) return box.replaceChildren(el("p", { class: "muted small" }, "No sessions yet."));
+    box.replaceChildren(...rows.map((s) => {
+      const day = new Date(s.started_at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      const row = el("button", { type: "button", class: "session-row", role: "menuitem" },
+        el("strong", {}, `${s.company} · ${s.role}`),
+        el("span", { class: "session-meta" },
+          el("span", {}, s.kind === "practice" ? "Practice" : "Interview"),
+          el("span", { class: `status-pill ${s.status}` }, STATUS[s.status] || s.status),
+          el("span", {}, day)));
+      row.onclick = () => { closeAccountMenu(); openSession(s.session_id); };
+      if (s.session_id === state.sessionId) row.classList.add("current");
+      return row;
+    }));
+  } catch (err) {
+    if (!err.loggedOut) box.replaceChildren(el("p", { class: "muted small" }, "Your sessions couldn't be loaded."));
+  }
+}
+
+$("account-button").addEventListener("click", () =>
+  ($("account-menu").hidden ? openAccountMenu() : closeAccountMenu()));
+// A click anywhere outside the menu, or Escape, closes it.
+document.addEventListener("click", (e) => {
+  if (!$("account-menu").hidden && !e.target.closest(".account-bar")) closeAccountMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("account-menu").hidden) { closeAccountMenu(); $("account-button").focus(); }
+});
+// "Delete my account…" opens the dialog (a modal: the page behind can't be clicked).
+$("open-account-dialog").addEventListener("click", () => {
+  closeAccountMenu();
+  $("account-dialog").showModal();
+});
+$("close-account-dialog").addEventListener("click", () => $("account-dialog").close());
+$("account-dialog").addEventListener("close", () => showError("")); // Cancel or Escape: start clean next time
 
 // The login panel holds three forms: "login" (your email), "code" (the code it received) and
 // "password" (admins only).
@@ -1261,6 +1318,7 @@ async function loadUsage() {
       box.title = `Interviews today: ${you.interviews_today} of ${you.interviews_per_day}`;
     }
     box.hidden = false;
+    $("menu-spend").textContent = box.textContent; // the same line under your email in the menu
     showQuota(u.you, u.limits);
   } catch (_) {}
 }

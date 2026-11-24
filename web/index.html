@@ -14,8 +14,7 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  your CV, then "Prepare my interview brief". Each step is two cards with an icon
                  tile; files go in a drop zone (the invisible file input covers it); Questions
                  has − / + buttons.
-                 "Your CV" shows the stored CV with a Delete button; a folded box continues a session;
-                 another, "Your account", deletes your account (confirmed by an emailed code).
+                 "Your CV" shows the stored CV with a Delete button.
                  Above the form, a note says when the next session is your practice (3 questions),
                  or, once nothing is left, offers "Request more" (POST /access-requests)
   2. brief     - the Interview Brief as six cards shown one at a time (round arrows, or the
@@ -28,9 +27,10 @@ style.css the look. There are five panels, and app.js shows one at a time:
                  and per question
 The Practiss logo (top left, images in web/brand/: one for light mode, one for dark) and "New
 interview" (top right) go back to an empty setup form at any time; the button next to it
-switches between light and dark colors. Your initial, your email and "Log out" sit in one white
-pill next to them once you're logged in, with what you have left (GET /usage; an admin sees the month's budget instead, in Sun
-from 80%).
+switches between light and dark colors. Once you're logged in, what you have left (GET /usage; an
+admin sees the month's budget instead, in Sun from 80%) and your initial and email sit in one white
+pill; a click on your initial opens the account menu: your 10 latest sessions (GET /sessions, a
+click continues one), "Delete my account…" (a dialog, confirmed by an emailed code) and Log out.
 No build step and no framework: edit a file, reload the page.
 -->
 <!doctype html>
@@ -58,21 +58,40 @@ No build step and no framework: edit a file, reload the page.
       <img class="logo-light" src="brand/logo-header.png" alt="Practiss" width="1240" height="336">
       <img class="logo-dark" src="brand/logo-header-dark.png" alt="Practiss" width="1240" height="336">
     </a></h1>
-    <span class="top-right">
+    <div class="top-right">
       <span id="session-label" class="muted small"></span>
       <button id="leave" type="button" class="btn btn-ghost btn-small" hidden>New interview</button>
-      <!-- Once logged in: what's left, your initial and email, and Log out, in one white pill -->
-      <span class="account-bar">
+      <!-- Once logged in: what's left, then your initial and email in one white pill. A click on
+           your initial opens the account menu: your latest sessions, "Delete my account…", Log out -->
+      <div class="account-bar">
         <span id="spend" class="spend small" hidden></span>
-        <span id="avatar" class="avatar" aria-hidden="true" hidden></span>
-        <span id="account" class="small" hidden></span>
-        <button id="logout" type="button" class="btn btn-ghost btn-small" hidden>Log out</button>
-      </span>
+        <button id="account-button" type="button" class="account-button" aria-haspopup="menu" aria-expanded="false"
+                aria-controls="account-menu" hidden>
+          <span id="avatar" class="avatar" aria-hidden="true"></span>
+          <span id="account" class="small"></span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div id="account-menu" class="account-menu" role="menu" hidden>
+          <div class="menu-head">
+            <span id="menu-avatar" class="avatar" aria-hidden="true"></span>
+            <span><strong id="menu-email"></strong><span id="menu-spend" class="muted small"></span></span>
+          </div>
+          <p class="menu-label">Your sessions</p>
+          <!-- Filled by app.js from GET /sessions each time the menu opens; a click opens that session -->
+          <div id="session-list" class="session-list"><p class="muted small">Loading...</p></div>
+          <div class="menu-foot">
+            <button id="open-account-dialog" type="button" class="menu-item" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Delete my account…</button>
+            <button id="logout" type="button" class="menu-item" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H3"/></svg>Log out</button>
+          </div>
+        </div>
+      </div>
       <!-- Light / dark switch: the knob slides to the sun (light) or the moon (dark) -->
       <button id="theme" type="button" class="theme-switch" role="switch" aria-checked="false" aria-label="Dark mode">
         <span class="icon sun"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg></span><span class="icon moon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></span><span class="knob"></span>
       </button>
-    </span>
+    </div>
   </header>
 
   <main>
@@ -293,28 +312,25 @@ No build step and no framework: edit a file, reload the page.
         </div>
       </form>
 
-      <details class="resume panel">
-        <summary>Or continue an earlier session</summary>
-        <div class="inline">
-          <input id="resume-id" placeholder="Session id, e.g. 8ac19f5b-679c-4d95-8591-ed81ca89a955">
-          <button id="resume" type="button" class="btn btn-ghost">Continue</button>
-        </div>
-      </details>
-
-      <!-- Your account: delete it and all its data, confirmed by a code sent to your email -->
-      <details class="resume panel" id="account-box">
-        <summary>Your account</summary>
-        <form id="delete-account-form" class="account-form">
-          <h3>Delete my account</h3>
-          <p class="hint">Deletes your account and everything in it: interviews, documents, CV, sessions, answers and feedback. It can't be undone. To confirm, we email you a code.</p>
-          <div class="inline">
-            <button id="delete-send-code" type="button" class="btn btn-ghost">Email me a code</button>
-            <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Code from the email" required>
-            <button type="submit" class="btn btn-danger">Delete my account</button>
-          </div>
-        </form>
-      </details>
     </section>
+
+    <!-- Delete my account (opened from the account menu): a modal dialog. It deletes the account
+         and all its data, confirmed by a code sent to your email. -->
+    <dialog id="account-dialog" class="account-dialog">
+      <form id="delete-account-form" class="account-form">
+        <p id="dialog-error" class="error" hidden></p>
+        <div class="card-head">
+          <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></span>
+          <div><h3>Delete my account</h3><p class="hint">Deletes your account and everything in it: interviews, documents, CV, sessions, answers and feedback. It can't be undone. To confirm, we email you a code.</p></div>
+        </div>
+        <button id="delete-send-code" type="button" class="btn btn-ghost">Email me a code</button>
+        <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Code from the email" required>
+        <div class="dialog-actions">
+          <button id="close-account-dialog" type="button" class="btn btn-ghost">Cancel</button>
+          <button type="submit" class="btn btn-danger">Delete my account</button>
+        </div>
+      </form>
+    </dialog>
 
     <!-- 2. Brief review -->
     <section id="panel-brief" class="panel" hidden>

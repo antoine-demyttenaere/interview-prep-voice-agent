@@ -1,6 +1,8 @@
 """Routes to run a practice session: the bridge between HTTP requests and the graph.
 
 - POST /interviews/{id}/sessions  creates a session and runs the graph to its first pause
+- GET  /sessions                  your 10 latest sessions (company, role, practice or interview,
+                                  brief / interview / done), for the page's account menu
 - GET  /sessions/{id}             what the session is waiting for (or the final feedback)
 - POST /sessions/{id}/resume      sends your reply to the pause: a brief decision or an answer
 - POST /sessions/{id}/retry       re-runs a step that failed (e.g. a Claude error)
@@ -218,6 +220,34 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
         "brief_approved": bool(approved) and not review_again,
     }
     return _run(request.app.state.graph, session, initial, db)
+
+
+@router.get("/sessions")
+def list_sessions(db: DB = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    """Your 10 latest sessions, newest first, for the account menu on the page.
+
+    The status comes from our own columns, so no checkpoint is read: "done" once the session has
+    ended (feedback written), "interview" once its questions are planned, else "brief".
+    """
+    rows = db.execute(
+        select(Session, Interview)
+        .join(Interview, Session.interview_id == Interview.id)
+        .where(Interview.user_id == user.id)
+        .order_by(Session.started_at.desc())
+        .limit(10)
+    ).all()
+    return [
+        {
+            "session_id": str(s.id),
+            "company": iv.company,
+            "role": iv.role,
+            "mode": iv.mode,
+            "kind": s.kind,
+            "started_at": s.started_at.isoformat(),
+            "status": "done" if s.ended_at else "interview" if s.questions_started_at else "brief",
+        }
+        for s, iv in rows
+    ]
 
 
 @router.get("/sessions/{session_id}")

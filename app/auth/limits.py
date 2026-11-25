@@ -18,9 +18,11 @@ Postgres (not in the server's memory) so they hold with several servers, as on A
 
 The trade-off: someone who knows your email can lock it for 15 minutes by typing wrong codes.
 
-The IP address is the one the server sees (request.client.host). Behind a load balancer (AWS,
-Phase 5), uvicorn must be told to trust its X-Forwarded-For header, or every caller would share
-the balancer's address.
+The IP address is the one the server sees (request.client.host). In production every request
+comes through Caddy (docker-compose.prod.yml), so uvicorn is told to trust the X-Forwarded-For
+header (the visitor's IP, added by Caddy) from Caddy's fixed address only
+(--forwarded-allow-ips): otherwise every caller would share Caddy's address, and if it trusted
+anyone, a bot could fake a new IP on each request.
 """
 
 from datetime import datetime, timedelta, timezone

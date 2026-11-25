@@ -5,8 +5,8 @@
 # server (uvicorn).
 # requirements.txt is copied and installed before the rest of the code so Docker can cache that
 # slow step: changing your code does not reinstall the packages.
-# Locally, docker-compose.yml replaces the start command to add --reload; in the cloud
-# (Phase 5, ECS) this CMD is used as is.
+# Both Compose files replace the start command: docker-compose.yml adds --reload (local),
+# docker-compose.prod.yml trusts Caddy's X-Forwarded-For (Phase 5, the AWS server).
 
 FROM python:3.12-slim
 

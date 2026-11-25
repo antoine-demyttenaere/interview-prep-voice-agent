@@ -43,7 +43,9 @@ How it works:
   for an admin with a password, "password" (the password screen; "Send me a code instead" asks
   again with use_code). "Continue with Google" is Google's own button (Google Identity Services,
   loaded from accounts.google.com only when GET /auth/config has a client id); Google hands
-  back an ID token, which POST /auth/google checks.
+  back an ID token, which POST /auth/google checks. On AWS, Cloudflare Turnstile (loaded from
+  challenges.cloudflare.com only when GET /auth/config has a site key) checks you're a person
+  before "Continue" sends a code: its token goes with POST /auth/start.
 - Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
   questions); the header says "Practice" during it. Once the practice and interviews are used, the
   setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
@@ -1224,13 +1226,15 @@ function showLogin(message = "", form = "login") {
   showError(message);
   ({ code: $("login-code"), password: $("password-input") }[form] || $("login-email")).focus();
   if (form === "login") showGoogleButton();
+  showTurnstile();
 }
 
 // "Continue": the server says whether to ask for a code (everyone) or a password (an admin who
 // has one). useCode = true always sends a code ("Send me a code instead", "Send a new code").
 async function continueWithEmail(useCode = false) {
   const email = $("login-email").value.trim();
-  const reply = await api("POST", "/auth/start", { email, use_code: useCode });
+  const turnstile_token = await turnstileToken();
+  const reply = await api("POST", "/auth/start", { email, use_code: useCode, turnstile_token });
   if (reply.method === "password") {
     $("password-email").value = email;
     $("password-for").textContent = email;
@@ -1254,21 +1258,32 @@ $("to-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending
 // "Continue with Google". The server's GET /auth/config gives the app's Google client id (none:
 // no button). Google's script draws its own button; picking an account calls back with an ID
 // token (a signed note from Google: who you are, for this app), which POST /auth/google checks.
+// GET /auth/config: what the login screen offers (Google's client id, Turnstile's site key),
+// asked once; a failure is asked again next time.
+let loginConfig = null;
+function getLoginConfig() {
+  if (!loginConfig) loginConfig = api("GET", "/auth/config").catch((err) => { loginConfig = null; throw err; });
+  return loginConfig;
+}
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`${src} could not load.`));
+    document.head.append(script);
+  });
+}
+
 const googleLogin = { clientId: undefined, ready: null }; // not "google": Google's script owns that global name
 function loadGoogle() {
   if (googleLogin.ready) return googleLogin.ready;
   googleLogin.ready = (async () => {
-    const config = await api("GET", "/auth/config");
+    const config = await getLoginConfig();
     googleLogin.clientId = config.google_client_id;
     if (!googleLogin.clientId) return false;
-    await new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.onload = resolve;
-      script.onerror = () => reject(new Error("Google sign-in could not load."));
-      document.head.append(script);
-    });
+    await loadScript("https://accounts.google.com/gsi/client");
     window.google.accounts.id.initialize({
       client_id: googleLogin.clientId,
       callback: (reply) => run("Logging in...", async () => {
@@ -1292,6 +1307,46 @@ async function showGoogleButton() {
     width: Math.min(400, box.clientWidth || 320),
   });
   $("google-box").hidden = false;
+}
+
+// Cloudflare Turnstile (Phase 5): "are you a person?" before the server emails a code. Only when
+// GET /auth/config has a site key (none on your laptop). Cloudflare's script draws a small widget
+// in #turnstile-box, which most people never have to click; it hands back a token that
+// POST /auth/start sends to the server. A token works once, so each use resets the widget.
+const human = { ready: null, widget: null, token: "", waiting: [] };
+function loadTurnstile() {
+  if (human.ready) return human.ready;
+  human.ready = (async () => {
+    const config = await getLoginConfig();
+    if (!config.turnstile_site_key) return false;
+    await loadScript("https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit");
+    const done = (token) => { human.token = token; human.waiting.splice(0).forEach((resolve) => resolve()); };
+    human.widget = window.turnstile.render("#turnstile-box", {
+      sitekey: config.turnstile_site_key,
+      appearance: "interaction-only", // shown only when Cloudflare needs a click
+      theme: currentTheme() === "dark" ? "dark" : "light",
+      callback: done,
+      "expired-callback": () => { human.token = ""; },
+      "error-callback": () => { human.token = ""; },
+    });
+    return true;
+  })().catch(() => { human.ready = null; return false; });
+  return human.ready;
+}
+function showTurnstile() { loadTurnstile(); }
+// The token for the next POST /auth/start ("" when Turnstile is off), waiting up to 30 s for it.
+async function turnstileToken() {
+  if (!(await loadTurnstile())) return "";
+  if (!human.token) {
+    await new Promise((resolve, reject) => {
+      human.waiting.push(resolve);
+      setTimeout(() => reject(new Error("The check that you're a person didn't finish. Reload the page and try again.")), 30000);
+    });
+  }
+  const token = human.token;
+  human.token = "";
+  window.turnstile.reset(human.widget); // a fresh token for "Send a new code"
+  return token;
 }
 
 $("password-form").addEventListener("submit", (e) => {

@@ -220,6 +220,9 @@ h3 { font-size: 1rem; margin: 0 0 8px; }
 .auth-card .auth-note { margin-top: 18px; text-align: center; }
 .auth-card .auth-icon { display: block; width: 56px; height: 56px; margin: 0 0 14px; }
 .auth-card .google-button { display: flex; justify-content: center; min-height: 44px; }
+/* Cloudflare Turnstile's widget under the login card (AWS only); takes no room while empty */
+.turnstile-box { display: flex; justify-content: center; margin-top: 16px; }
+.turnstile-box:empty { display: none; }
 /* what's left (a user) or the month's budget (an admin) in the header; Sun tint when a budget is at 80% or more */
 .spend { color: var(--muted); padding: 4px 12px; border-radius: 999px; background: var(--primary-soft); white-space: nowrap; }
 /* Once logged in, the top right holds one white pill: what's left, "Your sessions" (opens the

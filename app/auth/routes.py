@@ -1,7 +1,7 @@
 """The account routes: log in (or sign up) with a code sent by email, log out, and "who am I?".
 
-- GET  /auth/config       {google_client_id}: what the login screen offers (public)
-- POST /auth/start        {email, use_code?} -> {method: "code"}: emails a 6-digit login code, or
+- GET  /auth/config       {google_client_id, turnstile_site_key}: what the login screen offers
+- POST /auth/start        {email, use_code?, turnstile_token?} -> {method: "code"}: emails a 6-digit login code, or
                           {method: "password"} for an admin with a password (no email; the page
                           then asks for the password). use_code=true always sends a code.
 - POST /auth/verify       {email, code} -> checks it, creates the account the first time, logs in
@@ -13,6 +13,9 @@
 - GET  /auth/me           {email, is_admin} of the logged-in user, or 401
 - POST /auth/delete-code  emails a code to confirm deleting your account
 - DELETE /auth/me         {code} -> deletes your account and all your data (app/auth/account.py)
+
+With Turnstile on (TURNSTILE_SECRET_KEY set, Phase 5), /auth/start first checks the page's
+Turnstile token (turnstile.py) and answers 400 without a valid one, so bots can't send emails.
 
 Mounted by app/main.py. Uses codes.py (the codes), limits.py (too many attempts: 429), deps.py
 (who is logged in) and app/mail (sending the email). The web page (web/app.js) and the terminal
@@ -54,7 +57,7 @@ from sqlalchemy.orm import Session as DB
 from app.auth import limits
 from app.auth.account import delete_account
 from app.auth.codes import check_code, issue_code
-from app.auth import google
+from app.auth import google, turnstile
 from app.auth.deps import current_login, current_user
 from app.auth.passwords import check_password, hash_password, needs_rehash
 from app.auth.tokens import COOKIE_NAME, hash_token, new_token
@@ -70,6 +73,7 @@ WRONG_CODE = "This code is wrong or has expired. Check the latest email, or ask 
 WRONG_PASSWORD = "Wrong email or password. (Password login is for admins; everyone else uses a code.)"
 ENTER_PASSWORD = "Enter your password."
 GOOGLE_REFUSED = "Google sign-in didn't work. Try again, or continue with your email."
+NOT_A_PERSON = "The check that you're a person didn't pass. Wait for it to finish, or reload the page."
 EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # something@something.something
 
 
@@ -121,13 +125,17 @@ def _start_login(db: DB, user: User, response: Response) -> None:
 
 @router.get("/config")
 def config() -> dict:
-    """What the login screen can offer: the Google button needs the app's public client id."""
-    return {"google_client_id": get_settings().google_client_id or None}
+    """What the login screen can offer: the Google button needs the app's public client id, and
+    the Turnstile widget its public site key (None = not shown)."""
+    settings = get_settings()
+    return {"google_client_id": settings.google_client_id or None,
+            "turnstile_site_key": settings.turnstile_site_key or None}
 
 
 class StartIn(BaseModel):
     email: str
     use_code: bool = False  # an admin who wants a code rather than the password
+    turnstile_token: str = ""  # from the page's Turnstile widget (needed when Turnstile is on)
 
 
 @router.post("/start", status_code=202)
@@ -135,6 +143,8 @@ def start(body: StartIn, request: Request, db: DB = Depends(get_db)) -> dict:
     """Send a login code, or tell the page to ask an admin for their password. The account
     itself is only created once the code comes back."""
     email, ip = _valid_email(body.email), limits.client_ip(request)
+    if turnstile.enabled() and not turnstile.verify_token(body.turnstile_token, ip):
+        raise HTTPException(400, NOT_A_PERSON)
     limits.check_code_request(db, email, ip)
     limits.record(db, "code_sent", ip, email)  # also counts password checks, so probing is limited
     user = db.scalar(select(User).where(User.email == email))

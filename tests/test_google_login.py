@@ -57,7 +57,7 @@ def _users(email) -> list[User]:
 def test_not_set_up(real_auth, monkeypatch):
     monkeypatch.setattr(get_settings(), "google_client_id", "")
     with TestClient(app) as client:
-        assert client.get("/auth/config").json() == {"google_client_id": None}
+        assert client.get("/auth/config").json()["google_client_id"] is None
         assert client.post("/auth/google", json={"credential": "x"}).status_code == 404
 
 

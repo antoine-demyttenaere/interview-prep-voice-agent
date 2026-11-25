@@ -2,7 +2,8 @@
 #
 # The Dockerfile copies the project into the image (COPY . .), and in Phase 5 that image is pushed
 # to AWS. So anything personal or secret must be listed here, or it would end up inside the image:
-# - .env: API keys are passed in at run time (docker-compose.yml locally, Secrets Manager on AWS).
+# - .env: API keys are passed in at run time (docker-compose.yml locally; on AWS a .env written
+#   on the server from SSM Parameter Store).
 # - my_docs/, evals/private/, evals/audio/: your real CV, job posts, emails, the eval cases built
 #   from your real answers, and your recordings. Personal data: never in an image.
 # - evals/*/runs/: local eval summaries.

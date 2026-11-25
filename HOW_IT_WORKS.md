@@ -70,6 +70,9 @@ Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on 
 | **httpx** | A Python HTTP client, used to call Deepgram and ElevenLabs. | app/voice/ |
 | **MediaRecorder** | The browser's built-in recorder: it captures the microphone between your clicks on the button. | [web/app.js](web/app.js) |
 | **pytest** | Runs the automated tests. | [tests/](tests/) |
+| **Caddy** | A web server placed in front of the app in production (a **reverse proxy**: it receives every request from the internet and passes it on to the app). It gets and renews the HTTPS certificate by itself. | [Caddyfile](Caddyfile), [docker-compose.prod.yml](docker-compose.prod.yml) |
+| **Amazon SES** (with **boto3**) | AWS's email-sending service, which really delivers the login codes on AWS. boto3 is AWS's Python library. | [app/mail](app/mail/__init__.py) |
+| **Cloudflare Turnstile** | A free "are you a person?" check, usually invisible, so bots can't make the server send emails. | [app/auth/turnstile.py](app/auth/turnstile.py), [web/app.js](web/app.js) |
 
 ---
 
@@ -88,6 +91,7 @@ app/
     codes.py           The 6-digit login codes sent by email: make one, check one (stored as an HMAC)
     passwords.py       Admin passwords: hash and check them (Argon2)
     google.py          "Continue with Google": checks Google's ID token (google-auth)
+    turnstile.py       Cloudflare Turnstile: checks the page's "you're a person" token before a code is sent
     tokens.py          The random login token in the cookie, and its hash
     deps.py            current_user: who is calling, or 401
     ownership.py       owned_interview / owned_document / owned_session: yours, or 404
@@ -106,6 +110,8 @@ app/
     schemas.py         The shapes Claude must answer in (brief, plan, scores, feedback)
     prompts.py         Loads prompts/*.md and rubrics/*.yaml
     checkpointer.py    Saves the graph's progress in Postgres
+  mail/
+    __init__.py        Sending email: console (prints it in the logs, local) or Amazon SES (AWS)
   voice/
     __init__.py        SpeechError, and the supported languages (en, fr, es)
     stt.py             Speech-to-text: the interface + Deepgram
@@ -147,7 +153,9 @@ samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
 tests/                 Tests with a fake Claude, fake speech and a fake embedder, on their own database
 evals/audio/           Your recorded answers, when SAVE_AUDIO=true (never committed)
-docker-compose.yml     The two containers: api and db
+docker-compose.yml     The two containers: api and db (your laptop, with --reload)
+docker-compose.prod.yml  Production mode (AWS, or a try on your laptop): caddy, api from its image, db; see 13b
+Caddyfile              Caddy's settings: HTTPS for SITE_ADDRESS, then pass everything to the api
 Dockerfile             How the api image is built
 requirements.txt       Python packages
 alembic.ini            Alembic settings
@@ -181,7 +189,7 @@ You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db
 
 Every interview and session route needs a login; only `/health`, the `/auth/*` login routes and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them. There are **no passwords** (Phase 4.7): typing back a code sent to your inbox proves it's yours, so the same two steps sign up a new person and log in an existing one.
 
-1. **Your email:** the page calls `GET /auth/me` on load; a 401 shows the login screen. You type your email and click **Continue**. `POST /auth/start` ([routes.py](app/auth/routes.py)) answers `{"method": "password"}` for an admin who has a password (the page then asks for it, see below), and `{"method": "code"}` for everyone else: it makes a 6-digit code ([codes.py](app/auth/codes.py)) and emails it through [app/mail](app/mail/__init__.py). Locally the "console" provider doesn't send anything: it prints the email in `docker compose logs api`, where you read the code. (Amazon SES, to really send emails, comes with Phase 5.)
+1. **Your email:** the page calls `GET /auth/me` on load; a 401 shows the login screen. You type your email and click **Continue**. `POST /auth/start` ([routes.py](app/auth/routes.py)) answers `{"method": "password"}` for an admin who has a password (the page then asks for it, see below), and `{"method": "code"}` for everyone else: it makes a 6-digit code ([codes.py](app/auth/codes.py)) and emails it through [app/mail](app/mail/__init__.py). Locally the "console" provider doesn't send anything: it prints the email in `docker compose logs api`, where you read the code. On AWS, `MAIL_PROVIDER=ses` sends it with Amazon SES, using the server's IAM role (see 13b). With Turnstile on (AWS), the page first gets a token from Cloudflare that `/auth/start` checks (see Step 0b-ter).
 2. **The code:** you type it and `POST /auth/verify` checks it. The first time, it creates your account (marked `email_verified_at`). Then it creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
 3. **Every request after that:** the browser sends the cookie by itself. `current_user` hashes it, finds the matching `login_sessions` row (not expired, account not disabled) and lets the request through. Otherwise it's a 401, and the page shows the login screen again; logging in continues where you were.
 4. **Log out:** `POST /auth/logout` deletes the row, so that cookie stops working at once, even if someone copied it. The page also forgets its session id and draft (the browser may be shared).
@@ -202,7 +210,8 @@ The terminal CLI logs in the same way: it asks for your email (or reads `INTERVI
 
 ### Step 0b-ter: what protects the accounts
 
-- **Guessing and flooding limits** ([limits.py](app/auth/limits.py)): each code sent and each wrong code is a row in `auth_attempts` (migration 0008). At most 3 codes per email and 10 per IP address are sent in 15 minutes (`CODES_PER_EMAIL`, `CODES_PER_IP`), so nobody can fill someone's inbox. After 5 wrong codes for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right code, and the check runs before the code is looked at, so the answer reveals nothing. A successful login clears the email's failures. One IP address also gets at most 20 wrong codes in the window (`LOGIN_MAX_FAILURES_PER_IP`). The counts are in Postgres, not in memory, so they hold with several servers. The trade-off: someone who knows your email can lock it for 15 minutes.
+- **"Are you a person?" before an email is sent** ([turnstile.py](app/auth/turnstile.py), Phase 5): on AWS, the login page loads Cloudflare Turnstile, which looks at the browser and hands the page a token (most people never see anything; a few get one click). `POST /auth/start` asks Cloudflare whether the token is genuine (with `TURNSTILE_SECRET_KEY`) and answers 400 without one, before any email is sent. Without it, a script could make the server email thousands of strangers, which costs money and gets the domain marked as spam. A token works once, so the page resets the widget after each use ("Send a new code" gets a fresh one). It is off when the keys are empty, as on your laptop; the terminal CLI can't show the widget, so on AWS it logs in with an admin password.
+- **Guessing and flooding limits** ([limits.py](app/auth/limits.py)): each code sent and each wrong code is a row in `auth_attempts` (migration 0008). At most 3 codes per email and 10 per IP address are sent in 15 minutes (`CODES_PER_EMAIL`, `CODES_PER_IP`), so nobody can fill someone's inbox. After 5 wrong codes for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right code, and the check runs before the code is looked at, so the answer reveals nothing. A successful login clears the email's failures. One IP address also gets at most 20 wrong codes in the window (`LOGIN_MAX_FAILURES_PER_IP`). The counts are in Postgres, not in memory, so they hold with several servers. In production every request comes through Caddy, so uvicorn takes the visitor's IP from the `X-Forwarded-For` header Caddy adds, and trusts that header from Caddy's fixed address only (`--forwarded-allow-ips`): otherwise every visitor would share Caddy's address, or a bot could fake a new IP on every request. The trade-off: someone who knows your email can lock it for 15 minutes.
 - **Origin check** ([origin.py](app/auth/origin.py)): a **middleware** (code that runs around every request, added in [main.py](app/main.py)) refuses a POST / PUT / PATCH / DELETE whose `Origin` header isn't this server, with 403. Browsers add that header to such requests and pages can't fake it. This stops **CSRF** (cross-site request forgery: a malicious page making your browser send a request here with your cookie). `SameSite=Lax` already blocks other sites, but every port of `localhost` counts as the same site, so another local app could otherwise get through. Requests with no `Origin` (the CLI, curl, tests) don't come from a page and pass.
 - **Delete my account** (the account menu, opened by a click on your initial at the top right, then "Delete my account…", which opens a dialog): **Email me a code** (`POST /auth/delete-code`) sends a code made only for this, and typing it (`DELETE /auth/me`) confirms. That proves the inbox is still yours, so someone using a browser you left logged in can't delete your account. Then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the README's Privacy section says where data goes.
 - **Admin** ([manage_users.py](scripts/manage_users.py)): `list` (with when each email was verified), `disable EMAIL` (logged out at once, no login code is sent any more, data kept), `enable EMAIL`, `delete EMAIL` (asks you to type the email again). There are no passwords to reset.
@@ -549,6 +558,7 @@ docker compose exec api pytest -q
 - admin password and limits ([tests/test_admin.py](tests/test_admin.py)): "Continue" asks an admin with a password for it (no code sent) and sends a code to everyone else; an admin logs in with a password, or with a code as a fallback; a wrong password, a non-admin, an admin without a password, an unknown email and a disabled admin get the same 401; the 6th wrong password is blocked; only the Argon2 hash is stored, and set-password refuses non-admins and short passwords and ends other logins; an admin goes past the interviews-per-day and brief-revisions limits, but the budgets still stop them;
 - the practice and quotas ([tests/test_quotas.py](tests/test_quotas.py)): a new account's first session is a 3-question practice with Haiku feedback, and the next one reuses its documents and brief as a full interview with Sonnet feedback; after the practice and 2 interviews a new session is refused before any Claude call; "Request more" only once nothing is left, one at a time, emailing the admins; a grant adds interviews, closes the request and emails the person; a practice used elsewhere can't start twice; the practice budget stops practices, not interviews; admins have no quota ([tests/test_sessions_list.py](tests/test_sessions_list.py): `GET /sessions` lists your sessions newest first with the right status, never another account's). The shared test account has no practice and an endless interview quota, so the other tests run plain interviews;
 - cost control ([tests/test_costs.py](tests/test_costs.py)): prices (four token kinds, Haiku's long-prompt prices, unknown models never free, speech and embeddings); every Claude response recorded, and calls inside graph nodes recorded for the right user and session; usage kept after an account is deleted; over the monthly budget a running interview still ends with feedback while a new one gets 503 (and the daily budget says "tomorrow"); interviews per day counted when questions are planned, not for briefs; brief revisions, questions, documents, characters, web pages and CV capped; big recordings refused before speech-to-text; replays not synthesized twice and long questions text-only; `GET /usage` showing the budgets only to an admin. The conftest fixture `generous_limits` empties `usage` and sets the budgets and the daily limit very high for every other test;
+- production pieces ([tests/test_production.py](tests/test_production.py)): `ENVIRONMENT=production` refuses to start without a long `SECRET_KEY`, secure cookies, a real email provider, Turnstile keys and a real database password, and local never refuses; Amazon SES (a fake client) gets a plain-text email from `MAIL_FROM`, and an SES failure answers 502; with Turnstile on (a fake check), `/auth/config` gives the site key and `/auth/start` sends a code only with a valid token;
 - hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong code is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't try codes on many emails, and nobody can flood an inbox (per email and per IP); requests from another site are refused while the app's page, the CLI and GETs pass; deleting an account needs its own emailed code (a login code doesn't work), then leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
@@ -599,6 +609,26 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | open a database shell | `docker compose exec db psql -U app -d interview` |
 | after editing requirements.txt | `docker compose up -d --build` |
 | after editing .env | `docker compose up -d --force-recreate api` (the container reads .env when it is created) |
+
+### 13b. Production mode (Phase 5)
+
+On AWS the app runs from [docker-compose.prod.yml](docker-compose.prod.yml), which differs from the laptop setup in these ways:
+
+- **Caddy in front.** Only the `caddy` container is reachable from outside, on ports 80 and 443. It gets an HTTPS certificate from Let's Encrypt for `SITE_ADDRESS` (your domain) and renews it, redirects `http://` to `https://`, and passes each request to the api. HTTPS matters twice: codes and cookies travel encrypted, and browsers allow the microphone only on HTTPS pages (except localhost).
+- **The app from its image**: no source folder mounted, no `--reload`. On the server the image is pulled from GitHub's registry (GHCR); on your laptop `--build` builds it.
+- **Postgres stays private**: no port published, on an `internal` network that only the api joins, with its password from `POSTGRES_PASSWORD`.
+- **Settings checked at start.** `ENVIRONMENT=production` makes [app/config.py](app/config.py) (`check_production`, called by `lifespan` in main.py) refuse to start, with a list of what to fix, when `SECRET_KEY` is missing or short, `COOKIE_SECURE` is off, `MAIL_PROVIDER` is `console`, a Turnstile key is missing, or the database password is the local `app`. Better a clear error in the logs than a site where nobody can log in or cookies travel unencrypted.
+- **Email with Amazon SES** (`MAIL_PROVIDER=ses`): boto3 finds its credentials by itself. On the EC2 server they come from the server's **IAM role** (permissions attached to the machine), so no AWS key is stored anywhere. An email that can't be sent answers 502. SES costs about $0.10 per 1,000 emails, part of the AWS bill rather than the `usage` table.
+- **The visitor's IP** reaches the login limits through Caddy's `X-Forwarded-For`, trusted from Caddy's fixed address (172.30.0.10) only.
+- **Small-server sizes.** The server has 1 GB of memory, so each container has a cap (`mem_limit`: caddy 64 MB, api 512 MB, db 256 MB) and Postgres is tuned small (`shared_buffers=64MB`, `max_connections=40`, enough for the app's two pools). Measured on the laptop with `docker stats`: about 260 MB for all three at rest, 280 MB under a burst of 1,200 requests. Docker keeps at most 30 MB of logs per container, so the disk can't fill up.
+
+Try it on your laptop (it runs next to the dev Compose, with its own database). It needs a `.env` with the production settings: a `SECRET_KEY`, a `POSTGRES_PASSWORD`, `MAIL_PROVIDER=ses` and Cloudflare's test Turnstile keys from [.env.example](.env.example). Without AWS credentials on the laptop, "Continue" ends with "The email could not be sent", which shows SES was really called.
+
+| I want to... | Command |
+| --- | --- |
+| start production mode | `docker compose -f docker-compose.prod.yml up -d --build`, then `curl.exe -k https://localhost/health` (`-k`: the localhost certificate is Caddy's own, not trusted) |
+| see the memory each container uses | `docker stats` |
+| stop it (and delete its data) | `docker compose -f docker-compose.prod.yml down` (add `-v`) |
 
 **LangGraph Studio** (optional, not tested yet) shows the graph visually and lets you run steps one by one. [langgraph.json](langgraph.json) tells it where the graph is (`app/graph/build.py:graph`) and to load `.env`. To use it, install the CLI on your machine (`pip install "langgraph-cli[inmem]"`), then run `langgraph dev` in the project folder.
 
@@ -677,6 +707,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **429 / Too Many Requests**: the HTTP answer meaning "slow down, try again later".
 - **Middleware**: code that runs around every request, before and after the route.
 - **ON DELETE CASCADE**: a rule on a foreign key: when the row it points to is deleted, the database deletes this row too.
+- **IAM role**: a set of AWS permissions given to a machine or a service instead of a person; programs on that machine get short-lived credentials from it, so no keys are stored.
+- **Reverse proxy**: a server that receives the requests from the internet and passes them on to the app behind it (here Caddy, which also handles HTTPS).
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
 - **Migration**: a numbered script that changes the database's tables in a controlled way.
 - **Node**: one step of the graph, written as a Python function.
@@ -707,7 +739,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 4.8. Admin login with a password; no per-user limits for admins | built and tested: set-password / clear-password, "Admin? Log in with a password", CLI with INTERVIEW_PASSWORD; admins skip the daily and revision limits, budgets and size limits still apply. Setting your own password and the check are yours to do |
 | 4.9. Login and header polish: one email field that asks admins for their password, Continue with Google, the Practiss logo, what's left in the header, instant return to a brief | built and tested: admin detection on "Continue", `POST /auth/google` (migration 0013), the logo (top left, back to a new interview) and app icon, the header shows users what's left and no money, a draft brief is reused with no Claude call. Creating the Google OAuth client id and the check in a browser are yours to do |
-| 5. AWS with Terraform | planned |
+| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Next: Terraform (step 2) |
 | 6. Streaming, live turn detection, personas and more | planned |
 
 The details of each phase are in [plan.md](plan.md).

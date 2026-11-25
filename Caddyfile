@@ -1,0 +1,19 @@
+# Caddyfile - settings of Caddy, the web server in front of the app in production (docker-compose.prod.yml).
+#
+# One site: SITE_ADDRESS (your domain on AWS, "localhost" on your laptop). For a real domain
+# whose DNS points to this server, Caddy gets a free HTTPS certificate from Let's Encrypt and
+# renews it by itself; for "localhost" it makes its own certificate, which browsers and curl
+# don't trust (curl -k skips the check). Plain http:// requests are redirected to https://.
+# reverse_proxy passes every request to the api container and adds X-Forwarded-For (the
+# visitor's IP) and X-Forwarded-Proto (https), which uvicorn trusts from Caddy only.
+# After editing: docker compose -f docker-compose.prod.yml restart caddy
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+	reverse_proxy api:8000
+}

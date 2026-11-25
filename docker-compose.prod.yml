@@ -1,0 +1,119 @@
+# docker-compose.prod.yml - runs the app in production mode: on the AWS server (Phase 5), or on your laptop to try it.
+#
+# Three containers, like docker-compose.yml but locked down:
+# - caddy: the only one reachable from outside, on ports 80 and 443. Caddy is a web server that
+#   gets and renews an HTTPS certificate by itself (from Let's Encrypt) for SITE_ADDRESS, then
+#   passes each request to the api ("reverse proxy"). Its certificates live in the caddy_data
+#   volume, so a restart doesn't ask for new ones. Settings: Caddyfile.
+# - api: the app from its image (no source folder mounted, no --reload). ENVIRONMENT=production
+#   makes it refuse to start with unsafe settings (app/config.py). uvicorn trusts the
+#   X-Forwarded-For header (the visitor's real IP, added by Caddy) only from Caddy's fixed
+#   address, so the login limits see each visitor's IP and nobody else can fake it.
+# - db: Postgres + pgvector, on the private network only (no port published), tuned small for a
+#   1 GB server, with its password from POSTGRES_PASSWORD.
+# Each container has a memory cap (mem_limit), restarts by itself (after a crash or a reboot),
+# and keeps at most 30 MB of logs, so the 10 GB disk can't fill up.
+#
+# Needs a .env next to this file with the API keys and the production settings (.env.example,
+# "Production"). On your laptop (it runs next to the dev Compose: its own db and volumes):
+#   docker compose -f docker-compose.prod.yml up -d --build     then https://localhost (curl -k)
+#   docker stats                                                memory used by each container
+#   docker compose -f docker-compose.prod.yml down              stop (add -v to delete the data)
+# On the server, the image comes from GitHub's registry (GHCR) instead of being built:
+#   docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d --no-build
+
+name: interview-prod
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      web:
+        ipv4_address: 172.30.0.10 # fixed, so the api can trust X-Forwarded-For from this address only
+    depends_on:
+      - api
+    mem_limit: 64m
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  api:
+    image: ghcr.io/antoine-demyttenaere/interview-prep-voice-agent:${IMAGE_TAG:-latest}
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "true"
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/interview
+    command: >
+      sh -c "alembic upgrade head &&
+             (python scripts/seed_question_bank.py || echo 'Question bank not seeded, starting anyway') &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips 172.30.0.10"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    networks: [web, data]
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    logging: *logs
+
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: interview
+    # Small-server tuning (the defaults assume more memory): shared_buffers = Postgres's own cache,
+    # work_mem = memory per sort, max_connections = the app's two pools (SQLAlchemy up to 15,
+    # the checkpointer up to 10) plus room for psql and the migrations.
+    command: >
+      postgres
+      -c shared_buffers=64MB
+      -c effective_cache_size=192MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=40
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d interview"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [data]
+    shm_size: 128m
+    mem_limit: 256m
+    logging: *logs
+
+networks:
+  web: # caddy <-> api
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  data: # api <-> db; internal = no way out to the internet, nothing reaches the db but the api
+    internal: true
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

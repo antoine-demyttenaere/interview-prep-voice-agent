@@ -25,6 +25,7 @@ The app runs in Docker Compose (Windows host, PowerShell). The project folder is
 - After editing `requirements.txt` or the Dockerfile: `docker compose up -d --build`. After editing `.env`: `docker compose up -d --force-recreate api`.
 
 - Database shell: `docker compose exec db psql -U app -d interview`
+- Production mode (Phase 5; Caddy + HTTPS, Amazon SES, Turnstile, `ENVIRONMENT=production` refuses unsafe settings): `docker compose -f docker-compose.prod.yml up -d --build`, then `curl.exe -k https://localhost/health` (needs a `.env` with the production settings, see `.env.example`; HOW_IT_WORKS.md section 13b)
 - After switching `MODEL_TURN` / `MODEL_REASONING` to a new model, add it to `pricing.yaml` first (an unlisted model is priced at the high "default" price, with a warning in the logs).
 
 There is no linter or formatter config, and the web page ([web/](web/): plain `index.html`, `app.js`, `style.css`, no build step) is served as static files with `no-cache`, so a browser refresh picks up edits. Postgres is on host port **5433** (`app` / `app`, database `interview`).

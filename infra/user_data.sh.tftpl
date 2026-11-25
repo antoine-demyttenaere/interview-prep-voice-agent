@@ -1,0 +1,88 @@
+#!/bin/bash
+# infra/user_data.sh.tftpl - the script the EC2 server runs once, as root, at its first boot ("user data").
+#
+# Terraform fills it in (server.tf, templatefile: each $${...} below is replaced by a value) and
+# hands it to AWS with the server. It:
+# 1. waits for internet access (the fixed IP is attached a few seconds after the start);
+# 2. installs Docker and the Compose plugin, and turns on automatic security updates;
+# 3. adds a 2 GB swap file: disk used as spare memory, the safety margin of a 1 GB server;
+# 4. writes the app's folder $${app_dir}: docker-compose.prod.yml and Caddyfile (copied from
+#    this repo), settings.env (the non-secret settings from Terraform), and deploy.sh;
+# 5. runs deploy.sh, which builds .env from settings.env plus the secrets in SSM Parameter
+#    Store ($${ssm_prefix}, set with infra/set-secrets.ps1), pulls the image and starts the app.
+# deploy.sh stays on the server: run it again after changing a secret, and GitHub Actions runs
+# it for each deploy (step 4). Its output goes to /var/log/interview-deploy.log, and this
+# script's to /var/log/cloud-init-output.log (read them in a Session Manager shell).
+# Editing this file doesn't change a running server (server.tf ignores it); only a new one.
+set -euo pipefail
+
+# 1. Internet
+for i in $(seq 1 60); do
+  curl -sf --max-time 5 https://ssm.${region}.amazonaws.com >/dev/null && break
+  sleep 5
+done
+
+# 2. Docker, the Compose plugin, automatic security updates
+dnf install -y docker dnf-automatic
+systemctl enable --now docker
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-aarch64
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+sed -i 's/^upgrade_type.*/upgrade_type = security/; s/^apply_updates.*/apply_updates = yes/' /etc/dnf/automatic.conf
+systemctl enable --now dnf-automatic.timer
+
+# 3. Swap
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  sysctl -w vm.swappiness=10
+  echo 'vm.swappiness=10' > /etc/sysctl.d/90-swap.conf
+fi
+
+# 4. The app's folder
+mkdir -p ${app_dir}
+cd ${app_dir}
+echo '${compose_b64}' | base64 -d > docker-compose.prod.yml
+echo '${caddy_b64}' | base64 -d > Caddyfile
+
+cat > settings.env <<'SETTINGS'
+# settings.env - the non-secret production settings, written by Terraform's user data.
+MAIL_PROVIDER=ses
+MAIL_FROM=${mail_from}
+AWS_REGION=${region}
+SITE_ADDRESS=${site_address}
+IMAGE_TAG=${image_tag}
+LANGSMITH_TRACING=true
+SETTINGS
+
+cat > deploy.sh <<'DEPLOY'
+#!/bin/bash
+# deploy.sh - builds .env (settings.env + the secrets in SSM Parameter Store), pulls the image, (re)starts the app.
+# Run as root: sudo /opt/interview/deploy.sh   Log: /var/log/interview-deploy.log
+set -euo pipefail
+exec >> /var/log/interview-deploy.log 2>&1
+echo "=== deploy $(date -u +%FT%TZ)"
+cd APP_DIR
+umask 077
+{
+  cat settings.env
+  # Each parameter /interview-prep/prod/NAME becomes NAME=value
+  aws ssm get-parameters-by-path --region REGION --path SSM_PREFIX --with-decryption \
+    --query 'Parameters[*].[Name,Value]' --output text |
+    while IFS=$'\t' read -r name value; do echo "$${name##*/}=$value"; done
+} > .env.new
+mv .env.new .env
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build --remove-orphans
+docker image prune -f
+echo "=== done"
+DEPLOY
+sed -i "s|APP_DIR|${app_dir}|; s|REGION|${region}|; s|SSM_PREFIX|${ssm_prefix}|" deploy.sh
+chmod 700 deploy.sh
+
+# 5. Start the app (a missing image or secret is logged; fix it, then run deploy.sh again)
+./deploy.sh || echo "deploy.sh failed: see /var/log/interview-deploy.log"

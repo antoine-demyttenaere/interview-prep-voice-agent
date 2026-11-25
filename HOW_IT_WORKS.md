@@ -72,6 +72,7 @@ Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on 
 | **pytest** | Runs the automated tests. | [tests/](tests/) |
 | **Caddy** | A web server placed in front of the app in production (a **reverse proxy**: it receives every request from the internet and passes it on to the app). It gets and renews the HTTPS certificate by itself. | [Caddyfile](Caddyfile), [docker-compose.prod.yml](docker-compose.prod.yml) |
 | **Amazon SES** (with **boto3**) | AWS's email-sending service, which really delivers the login codes on AWS. boto3 is AWS's Python library. | [app/mail](app/mail/__init__.py) |
+| **Terraform** | Describes cloud resources (network, server, permissions...) in text files; `terraform plan` shows what would change and `terraform apply` creates or changes them, so the AWS setup is reviewable and repeatable instead of clicked by hand. | [infra/](infra/) |
 | **Cloudflare Turnstile** | A free "are you a person?" check, usually invisible, so bots can't make the server send emails. | [app/auth/turnstile.py](app/auth/turnstile.py), [web/app.js](web/app.js) |
 
 ---
@@ -156,6 +157,16 @@ evals/audio/           Your recorded answers, when SAVE_AUDIO=true (never commit
 docker-compose.yml     The two containers: api and db (your laptop, with --reload)
 docker-compose.prod.yml  Production mode (AWS, or a try on your laptop): caddy, api from its image, db; see 13b
 Caddyfile              Caddy's settings: HTTPS for SITE_ADDRESS, then pass everything to the api
+infra/                 The AWS setup in Terraform (Phase 5); see 13c
+  bootstrap/main.tf    Once: the S3 bucket that keeps Terraform's state (writes infra/backend.hcl)
+  main.tf              Settings, inputs (variables) and outputs (the server's IP, the shell command)
+  network.tf           VPC, public subnet, internet gateway, firewall (ports 80 and 443 only, no SSH)
+  iam.tf               What the server may do: Session Manager, send email with SES, read its secrets
+  server.tf            The EC2 server (t4g.micro), its encrypted disk, its fixed IP, weekly snapshots
+  budget.tf            Emails you when the month's AWS bill heads past $10
+  user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app, deploy.sh
+  set-secrets.ps1      Stores the API keys and secrets in SSM Parameter Store (typed, never in git)
+  terraform.tfvars.example  Template for your own values (your alert email)
 Dockerfile             How the api image is built
 requirements.txt       Python packages
 alembic.ini            Alembic settings
@@ -630,6 +641,38 @@ Try it on your laptop (it runs next to the dev Compose, with its own database). 
 | see the memory each container uses | `docker stats` |
 | stop it (and delete its data) | `docker compose -f docker-compose.prod.yml down` (add `-v`) |
 
+### 13c. On AWS (Phase 5)
+
+The AWS setup is written in Terraform, in [infra/](infra/), so every piece can be read, reviewed and rebuilt with one command. It creates:
+
+- **A private network** (`network.tf`): a VPC (a network of our own inside AWS) with one public subnet whose traffic to the internet goes through an internet gateway, and a **security group** (the server's firewall) that lets in only ports 80 and 443. There is no SSH port: shells go through **Session Manager**, which works through the AWS API with your AWS login, so there is no key to lose and no port to attack.
+- **The server** (`server.tf`): one EC2 t4g.micro (ARM, 1 GB memory) on Amazon Linux 2023, with an encrypted 10 GB disk and an **Elastic IP** (a public address that stays the same when the server stops). "Standard" CPU credits mean a busy CPU slows down rather than adding to the bill. **IMDSv2** is required (the metadata service that hands out the role's credentials answers only requests with a session token), with a hop limit of 2 so the app's container can reach it for SES. A newer Amazon Linux image is never applied to the running server, since that would rebuild it and lose its data; the server installs its own security updates instead.
+- **Permissions** (`iam.tf`): the server's **IAM role** allows Session Manager and SSM Run Command (deploys, step 4), sending email with SES, and reading its own secrets. Nothing else.
+- **Weekly snapshots** (`server.tf`, Data Lifecycle Manager): a copy of the disk every Sunday, 4 kept, so a broken server or database can be rebuilt from at most a week ago.
+- **A budget** (`budget.tf`): an email at 80% of $10 spent, and when AWS forecasts the month will end above $10.
+
+**The first boot** ([user_data.sh.tftpl](infra/user_data.sh.tftpl)): AWS runs this script once. It installs Docker and the Compose plugin, turns on automatic security updates, adds a 2 GB swap file (disk used as spare memory), writes `/opt/interview` (the Compose file and Caddyfile from this repo, `settings.env` with the non-secret settings, and `deploy.sh`), then runs `deploy.sh`.
+
+**deploy.sh** (on the server) builds `.env` from `settings.env` plus every secret stored under `/interview-prep/prod` in **SSM Parameter Store** (AWS's key-value store, encrypted), pulls the image from GitHub's registry and (re)starts the containers. Run it again after changing a secret. Its log is `/var/log/interview-deploy.log`.
+
+**Secrets never touch Terraform.** If Terraform created them, their values would sit in its state file. Instead, [set-secrets.ps1](infra/set-secrets.ps1) stores them with the AWS CLI: it generates `SECRET_KEY` and `POSTGRES_PASSWORD` itself (the database password is never replaced, because the database was created with it) and asks you for each API key, typed hidden.
+
+**Terraform's state** (the list of what it created) is kept in an S3 bucket made once by [infra/bootstrap](infra/bootstrap/main.tf): private, encrypted, versioned, and locked while Terraform runs.
+
+| I want to... | Command (PowerShell, from the folder named) |
+| --- | --- |
+| create the state bucket (once) | `infra/bootstrap`: `terraform init`, then `terraform apply` |
+| connect infra/ to it (once) | `infra`: `terraform init -backend-config=backend.hcl` |
+| set my alert email (once) | copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` and edit it |
+| store the secrets | `infra`: `./set-secrets.ps1` (one value: `./set-secrets.ps1 NAME`; what is set: `-List`) |
+| see what would change (free) | `infra`: `terraform plan` |
+| create or update the AWS resources | `infra`: `terraform apply` (shows the plan, then asks "yes") |
+| check the app | `curl.exe http://<public_ip>/health` (`terraform output public_ip`) |
+| open a shell on the server | `terraform output shell` gives the command (needs the AWS CLI's Session Manager plugin) |
+| redeploy after changing a secret | in that shell: `sudo /opt/interview/deploy.sh`, then `sudo tail /var/log/interview-deploy.log` |
+| stop paying for the server while not using it | `aws ec2 stop-instances --instance-ids <instance_id>` (`start-instances` to resume; the disk and IP are still billed, about $5 a month) |
+| remove everything (except the state bucket) | `infra`: `terraform destroy` (the database goes with the server; the snapshots stay until deleted) |
+
 **LangGraph Studio** (optional, not tested yet) shows the graph visually and lets you run steps one by one. [langgraph.json](langgraph.json) tells it where the graph is (`app/graph/build.py:graph`) and to load `.env`. To use it, install the CLI on your machine (`pip install "langgraph-cli[inmem]"`), then run `langgraph dev` in the project folder.
 
 **What did it cost?** The admin's header shows the month's spend. For details, in a database shell: `SELECT provider, model, round(sum(cost_usd), 4) FROM usage WHERE created_at >= date_trunc('month', now()) GROUP BY 1, 2;` Compare with each provider's dashboard now and then: they should agree within about 20%.
@@ -707,6 +750,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **429 / Too Many Requests**: the HTTP answer meaning "slow down, try again later".
 - **Middleware**: code that runs around every request, before and after the route.
 - **ON DELETE CASCADE**: a rule on a foreign key: when the row it points to is deleted, the database deletes this row too.
+- **Terraform state**: Terraform's record of the resources it created and their ids, so the next run knows what exists; kept in S3.
+- **Security group**: AWS's firewall around a server: which ports may be reached, from where.
 - **IAM role**: a set of AWS permissions given to a machine or a service instead of a person; programs on that machine get short-lived credentials from it, so no keys are stored.
 - **Reverse proxy**: a server that receives the requests from the internet and passes them on to the app behind it (here Caddy, which also handles HTTPS).
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
@@ -739,7 +784,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 4.8. Admin login with a password; no per-user limits for admins | built and tested: set-password / clear-password, "Admin? Log in with a password", CLI with INTERVIEW_PASSWORD; admins skip the daily and revision limits, budgets and size limits still apply. Setting your own password and the check are yours to do |
 | 4.9. Login and header polish: one email field that asks admins for their password, Continue with Google, the Practiss logo, what's left in the header, instant return to a brief | built and tested: admin detection on "Continue", `POST /auth/google` (migration 0013), the logo (top left, back to a new interview) and app icon, the header shows users what's left and no money, a draft brief is reused with no Claude call. Creating the Google OAuth client id and the check in a browser are yours to do |
-| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Next: Terraform (step 2) |
+| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) written and checked (`terraform validate`, a `plan` of 20 resources, the boot scripts' syntax); not applied yet |
 | 6. Streaming, live turn detection, personas and more | planned |
 
 The details of each phase are in [plan.md](plan.md).

@@ -1,0 +1,12 @@
+# .gitattributes - tells git how to treat some files, here their line endings.
+#
+# On Windows, git can turn line endings into CRLF (\r\n) when it checks files out. Files that run
+# on the Linux server must keep LF (\n): a bash script with \r at the end of its lines fails
+# ("bad interpreter"). Terraform reads infra/user_data.sh.tftpl, docker-compose.prod.yml and the
+# Caddyfile from your checkout and sends them to the server, so they are pinned to LF here.
+
+*.sh text eol=lf
+*.tftpl text eol=lf
+Caddyfile text eol=lf
+docker-compose*.yml text eol=lf
+Dockerfile text eol=lf

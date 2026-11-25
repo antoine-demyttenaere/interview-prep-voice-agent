@@ -657,10 +657,13 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 
 **Secrets never touch Terraform.** If Terraform created them, their values would sit in its state file. Instead, [set-secrets.ps1](infra/set-secrets.ps1) stores them with the AWS CLI: it generates `SECRET_KEY` and `POSTGRES_PASSWORD` itself (the database password is never replaced, because the database was created with it) and asks you for each API key, typed hidden.
 
+**Your AWS login** has no long-lived key. The CLI and Terraform use **IAM Identity Center** (AWS's single sign-on, set up in Paris, `eu-west-3`; it gives access to every region): `aws sso login` opens the browser, you sign in with MFA, and the `default` profile gets credentials of the `AdministratorAccess` permission set that expire after 4 hours. A stolen laptop or a leaked file therefore gives access for a few hours at most, and only after an MFA sign-in. The one-time setup is `aws configure sso` (start URL from the Identity Center dashboard, SSO region `eu-west-3`, client region `eu-west-1`, profile `default`).
+
 **Terraform's state** (the list of what it created) is kept in an S3 bucket made once by [infra/bootstrap](infra/bootstrap/main.tf): private, encrypted, versioned, and locked while Terraform runs.
 
 | I want to... | Command (PowerShell, from the folder named) |
 | --- | --- |
+| log in to AWS (each working session; the login lasts 4 hours) | `aws sso login` (a browser sign-in with MFA, through IAM Identity Center) |
 | create the state bucket (once) | `infra/bootstrap`: `terraform init`, then `terraform apply` |
 | connect infra/ to it (once) | `infra`: `terraform init -backend-config=backend.hcl` |
 | set my alert email (once) | copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` and edit it |

@@ -50,12 +50,12 @@ jobs:
           --health-cmd "pg_isready -U app -d interview"
           --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true # keep it on the runner for the tests; pushed below only if they pass
@@ -73,7 +73,7 @@ jobs:
           -e LANGSMITH_TRACING=false
           ${{ env.IMAGE }}:${{ github.sha }} pytest -q
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -89,7 +89,7 @@ jobs:
       contents: read
       id-token: write # lets the run ask GitHub for its OIDC token
     steps:
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: eu-west-1

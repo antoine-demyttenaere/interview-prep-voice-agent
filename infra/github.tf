@@ -5,8 +5,9 @@
 # tokens signed by GitHub. The workflow (.github/workflows/deploy.yml) hands its token to AWS
 # STS, which gives back credentials of the github-deploy role for one hour.
 #
-# The role's trust policy accepts only tokens from THIS repository's main branch, so another
-# repository, a fork or another branch can't use it. And the role can only do one thing: run
+# The role's trust policy accepts only tokens from THIS repository's main branch (the token's
+# "sub", e.g. repo:owner@id/name@id:ref:refs/heads/main), so another repository, a fork or
+# another branch can't use it. A refused login shows the "sub" GitHub sent in CloudTrail. And the role can only do one thing: run
 # a shell command on this server through SSM Run Command (the deploy), and read its result.
 # It can't read the secrets, change the infrastructure or touch anything else in the account.
 #
@@ -14,9 +15,12 @@
 # sensitive): AWS_DEPLOY_ROLE_ARN = the deploy_role_arn output, AWS_INSTANCE_ID = instance_id.
 
 variable "github_repo" {
-  description = "The GitHub repository (owner/name) allowed to deploy"
+  description = "The GitHub repository allowed to deploy, as GitHub writes it in its tokens: owner@owner-id/name@repo-id"
   type        = string
-  default     = "antoine-demyttenaere/interview-prep-voice-agent"
+  # GitHub's tokens name the owner and the repository with their numeric ids (seen in CloudTrail,
+  # AssumeRoleWithWebIdentity events). The ids never change and are never reused, so a repository
+  # deleted and re-created under the same name by someone else could not deploy.
+  default = "antoine-demyttenaere@109357504/interview-prep-voice-agent@1469022852"
 }
 
 resource "aws_iam_openid_connect_provider" "github" {

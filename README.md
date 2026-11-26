@@ -110,5 +110,5 @@ The app is meant to run on your own machine, and both ports are bound to `127.0.
 | 4.8: admin login with a password, no per-user limits for admins | built |
 | 4.9: one email field (admins get the password), Continue with Google, the Practiss logo, instant return to a brief | built |
 | 4.5: cost control, per user | built |
-| 5: deployment on AWS with Terraform | in progress (step 1: production mode, done; step 2: Terraform, applied; step 4: deploys from GitHub Actions, written) |
+| 5: deployment on AWS with Terraform | in progress (step 1: production mode, done; step 2: Terraform, applied; step 4: deploys from GitHub Actions, done; nightly backups and an on/off switch for the server) |
 | 6: streaming, live turn detection, personas | planned |

@@ -9,6 +9,7 @@
 # - be managed by Systems Manager (AmazonSSMManagedInstanceCore): Session Manager shells, and
 #   SSM Run Command for deploys (step 4);
 # - send email with SES (app/mail SesMailer), from identities of this account only;
+# - write and read the database backups in the backup bucket (backup.tf), never delete them;
 # - read its own secrets under /interview-prep/prod in SSM Parameter Store (set-secrets.ps1),
 #   decrypted with the default AWS key for SSM.
 # The snapshot service (Data Lifecycle Manager, server.tf) gets AWS's own role for snapshots.
@@ -40,6 +41,16 @@ data "aws_iam_policy_document" "server" {
     sid       = "SendEmail"
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
     resources = ["arn:aws:ses:${var.region}:${data.aws_caller_identity.me.account_id}:identity/*"]
+  }
+  statement {
+    sid       = "ListBackups"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.backups.arn]
+  }
+  statement {
+    sid       = "ReadWriteBackups" # backup.sh writes the dumps, deploy.sh reads one back
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.backups.arn}/*"]
   }
   statement {
     sid     = "ReadOwnSecrets"

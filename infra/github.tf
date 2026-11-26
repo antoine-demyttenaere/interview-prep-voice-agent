@@ -12,7 +12,8 @@
 # It can't read the secrets, change the infrastructure or touch anything else in the account.
 #
 # After `terraform apply`, the workflow needs two repository variables (not secrets: neither is
-# sensitive): AWS_DEPLOY_ROLE_ARN = the deploy_role_arn output, AWS_INSTANCE_ID = instance_id.
+# sensitive): AWS_DEPLOY_ROLE_ARN = the deploy_role_arn output, and SITE_URL. It finds the
+# server itself, by its Name tag, so a rebuilt server needs no change in GitHub.
 
 variable "github_repo" {
   description = "The GitHub repository allowed to deploy, as GitHub writes it in its tokens: owner@owner-id/name@repo-id"
@@ -55,17 +56,26 @@ resource "aws_iam_role" "github_deploy" {
 }
 
 data "aws_iam_policy_document" "github_deploy" {
+  # The server is found by its Name tag, not by its id, because a rebuilt server
+  # (server.ps1 up) gets a new id. Only a server tagged Name=interview-prep can receive commands.
   statement {
-    sid     = "RunCommandOnTheServer"
-    actions = ["ssm:SendCommand"]
-    resources = [
-      aws_instance.server.arn,
-      "arn:aws:ssm:${var.region}::document/AWS-RunShellScript",
-    ]
+    sid       = "RunCommandOnTheServer"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ec2:${var.region}:${data.aws_caller_identity.me.account_id}:instance/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Name"
+      values   = [local.name]
+    }
   }
   statement {
-    sid       = "ReadTheResult" # these two actions can't be limited to one server
-    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]
+    sid       = "WithTheShellScriptDocument"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ssm:${var.region}::document/AWS-RunShellScript"]
+  }
+  statement {
+    sid       = "FindTheServerAndReadTheResult" # these actions can't be limited to one server
+    actions   = ["ec2:DescribeInstances", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]
     resources = ["*"]
   }
 }

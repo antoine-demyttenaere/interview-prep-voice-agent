@@ -14,14 +14,21 @@
 #   Snapshot=weekly, so Data Lifecycle Manager copies it every Sunday and keeps 4 copies.
 # - Elastic IP: a public IPv4 address that stays the same when the server stops and starts
 #   (the domain's DNS record points to it in step 3). Billed $3.65 a month like any IPv4.
-# - user_data: the first-boot script (user_data.sh.tftpl), filled with the Compose file and the
-#   Caddyfile of this repo. Editing it later doesn't touch the running server (deploys are step 4).
+# - user_data: the first-boot script (user_data.sh.tftpl), filled with the Compose file, the
+#   Caddyfile, deploy.sh and backup.sh of this repo. Editing it later doesn't touch the running
+#   server; each deploy from GitHub brings the newest versions of those files.
+#
+# The on/off switch: server_enabled (main.tf). With false, Terraform destroys the server, its
+# disk and its Elastic IP (count = 0), and keeps everything else: the network, the roles, the
+# backup bucket, the domain's records, the budget. infra/server.ps1 down / up flips it, after a
+# backup / before a restore. The data lives on in S3 (backup.tf), not on the destroyed disk.
 
 data "aws_ssm_parameter" "al2023_arm64" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
 }
 
 resource "aws_instance" "server" {
+  count                  = var.server_enabled ? 1 : 0
   ami                    = data.aws_ssm_parameter.al2023_arm64.value
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
@@ -45,7 +52,9 @@ resource "aws_instance" "server" {
     tags        = { Name = "${local.name}-disk", Snapshot = "weekly" }
   }
 
-  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
+  # gzip-compressed (cloud-init unpacks it): the script and its four files are over AWS's 16 KB
+  # limit for user data, about a third of it once compressed.
+  user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
     region       = var.region
     app_dir      = local.app_dir
     image_tag    = var.image_tag
@@ -54,19 +63,33 @@ resource "aws_instance" "server" {
     compose_b64  = base64encode(file("${path.module}/../docker-compose.prod.yml"))
     caddy_b64    = base64encode(file("${path.module}/../Caddyfile"))
     deploy_b64   = base64encode(file("${path.module}/deploy.sh"))
-  })
+    backup_b64   = base64encode(file("${path.module}/backup.sh"))
+  }))
 
   tags = { Name = local.name }
 
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, user_data_base64]
   }
 }
 
 resource "aws_eip" "server" {
+  count    = var.server_enabled ? 1 : 0
   domain   = "vpc"
-  instance = aws_instance.server.id
+  instance = aws_instance.server[0].id
   tags     = { Name = local.name }
+}
+
+# The server and its IP used to have no count: these tell Terraform they are the same resources
+# as the first item of each list now, so adding the switch didn't rebuild anything.
+moved {
+  from = aws_instance.server
+  to   = aws_instance.server[0]
+}
+
+moved {
+  from = aws_eip.server
+  to   = aws_eip.server[0]
 }
 
 resource "aws_dlm_lifecycle_policy" "weekly" {

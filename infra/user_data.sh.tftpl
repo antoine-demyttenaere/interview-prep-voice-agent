@@ -6,11 +6,12 @@
 # 1. waits for internet access (the fixed IP is attached a few seconds after the start);
 # 2. installs Docker and the Compose plugin, and turns on automatic security updates;
 # 3. adds a 2 GB swap file: disk used as spare memory, the safety margin of a 1 GB server;
-# 4. writes the app's folder $${app_dir}: docker-compose.prod.yml, Caddyfile and deploy.sh
-#    (infra/deploy.sh), copied from this repo, and settings.env (the non-secret settings);
+# 4. writes the app's folder $${app_dir}: docker-compose.prod.yml, Caddyfile, deploy.sh and
+#    backup.sh (infra/), copied from this repo, and settings.env (the non-secret settings);
 # 5. runs deploy.sh, which builds .env from settings.env plus the secrets in SSM Parameter
-#    Store (set with infra/set-secrets.ps1), pulls the image and starts the app.
-# Each deploy from GitHub Actions replaces the three copied files with their version in git,
+#    Store (set with infra/set-secrets.ps1), restores the latest backup into the new, empty
+#    database (if there is one in S3), pulls the image and starts the app.
+# Each deploy from GitHub Actions replaces the four copied files with their version in git,
 # then runs deploy.sh again. Logs: /var/log/interview-deploy.log for deploy.sh, and
 # /var/log/cloud-init-output.log for this script (read them in a Session Manager shell).
 # Editing this file doesn't change a running server (server.tf ignores it); only a new one.
@@ -60,7 +61,8 @@ LANGSMITH_TRACING=true
 SETTINGS
 
 echo '${deploy_b64}' | base64 -d > deploy.sh
-chmod 700 deploy.sh
+echo '${backup_b64}' | base64 -d > backup.sh
+chmod 700 deploy.sh backup.sh
 
 # 5. Start the app (a missing image or secret is logged; fix it, then run deploy.sh again)
 ./deploy.sh || echo "deploy.sh failed: see /var/log/interview-deploy.log"

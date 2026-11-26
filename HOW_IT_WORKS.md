@@ -166,7 +166,10 @@ infra/                 The AWS setup in Terraform (Phase 5); see 13c
   budget.tf            Emails you when the month's AWS bill heads past $10
   github.tf            Lets GitHub Actions deploy with OIDC: a role that can only run the deploy on the server
   user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app's folder, deploy.sh
-  deploy.sh            Runs on the server: .env from the SSM secrets, pull the image, restart, wait for /health
+  backup.tf            The S3 bucket for the database backups (outlives the server)
+  deploy.sh            Runs on the server: .env from the SSM secrets, restore a backup into an empty database, pull, restart, wait for /health
+  backup.sh            Runs on the server every night and before `server.ps1 down`: pg_dump to S3
+  server.ps1           Your on/off switch: status / down (backup, then destroy the server) / up (rebuild and restore)
   set-secrets.ps1      Stores the API keys and secrets in SSM Parameter Store (typed, never in git)
   terraform.tfvars.example  Template for your own values (your alert email)
 Dockerfile             How the api image is built
@@ -652,7 +655,10 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 - **A private network** (`network.tf`): a VPC (a network of our own inside AWS) with one public subnet whose traffic to the internet goes through an internet gateway, and a **security group** (the server's firewall) that lets in only ports 80 and 443. There is no SSH port: shells go through **Session Manager**, which works through the AWS API with your AWS login, so there is no key to lose and no port to attack.
 - **The server** (`server.tf`): one EC2 t4g.micro (ARM, 1 GB memory) on Amazon Linux 2023, with an encrypted 10 GB disk and an **Elastic IP** (a public address that stays the same when the server stops). "Standard" CPU credits mean a busy CPU slows down rather than adding to the bill. **IMDSv2** is required (the metadata service that hands out the role's credentials answers only requests with a session token), with a hop limit of 2 so the app's container can reach it for SES. A newer Amazon Linux image is never applied to the running server, since that would rebuild it and lose its data; the server installs its own security updates instead.
 - **Permissions** (`iam.tf`): the server's **IAM role** allows Session Manager and SSM Run Command (deploys, step 4), sending email with SES, and reading its own secrets. Nothing else.
-- **Weekly snapshots** (`server.tf`, Data Lifecycle Manager): a copy of the disk every Sunday, 4 kept, so a broken server or database can be rebuilt from at most a week ago.
+- **Backups of the database** ([backup.tf](infra/backup.tf), [backup.sh](infra/backup.sh)): every night at 02:30 UTC (a systemd timer that `deploy.sh` installs) the server saves the whole database with `pg_dump` (every table, the documents' vectors, the interview checkpoints) to a private S3 bucket, as `interview/latest.dump` plus a dated copy kept 30 days. The bucket doesn't belong to the server, so it survives when the server is destroyed. Tested: a dump restored into a scratch database gave back the same tables and rows.
+- **Weekly snapshots** (`server.tf`, Data Lifecycle Manager): a copy of the whole disk every Sunday, 4 kept. Useful to rebuild a broken server as it was; the S3 backups are what `server.ps1 up` uses.
+
+**Switching the server off and on** ([server.ps1](infra/server.ps1)): the Terraform variable `server_enabled` is the switch. `./server.ps1 down` first runs `backup.sh` on the server (if it fails, nothing is destroyed), then sets the switch to `false` in `server.auto.tfvars` and runs `terraform apply`, which removes the server, its disk and its IP (you type "yes" after reading the plan). What's left costs about $0.50 a month (the domain's DNS zone) and keeps everything needed to come back: the backups, the secrets in SSM, the network, the roles, the budget, GitHub's deploy access. `./server.ps1 up` sets the switch back to `true` and applies; the new server's first boot installs Docker, finds an empty database and loads `latest.dump` into it before the app starts (`deploy.sh` never touches a database that already has tables), then starts the latest image. The deploy workflow finds the server by its Name tag, so a new server needs no change on GitHub, and a push while the server is off just publishes the image.
 - **A budget** (`budget.tf`): an email at 80% of $10 spent, and when AWS forecasts the month will end above $10.
 
 **The first boot** ([user_data.sh.tftpl](infra/user_data.sh.tftpl)): AWS runs this script once. It installs Docker and the Compose plugin, turns on automatic security updates, adds a 2 GB swap file (disk used as spare memory), writes `/opt/interview` (the Compose file and Caddyfile from this repo, `settings.env` with the non-secret settings, and `deploy.sh`), then runs `deploy.sh`.
@@ -677,8 +683,12 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 | check the app | `curl.exe http://<public_ip>/health` (`terraform output public_ip`) |
 | open a shell on the server | `terraform output shell` gives the command (needs the AWS CLI's Session Manager plugin) |
 | redeploy after changing a secret | in that shell: `sudo /opt/interview/deploy.sh`, then `sudo tail /var/log/interview-deploy.log` |
-| stop paying for the server while not using it | `aws ec2 stop-instances --instance-ids <instance_id>` (`start-instances` to resume; the disk and IP are still billed, about $5 a month) |
-| remove everything (except the state bucket) | `infra`: `terraform destroy` (the database goes with the server; the snapshots stay until deleted) |
+| see whether the server is on, and the last backup | `infra`: `./server.ps1 status` |
+| stop paying for the server, keeping the data | `infra`: `./server.ps1 down` (backup to S3, then the server, disk and IP are destroyed; about $0.50 a month left) |
+| bring it back | `infra`: `./server.ps1 up` (about 10 minutes; restores the last backup, starts the latest image) |
+| back up now | in a server shell: `sudo /opt/interview/backup.sh` (log: `/var/log/interview-backup.log`) |
+| pause it for a few hours instead | `aws ec2 stop-instances --instance-ids <instance_id>` (`start-instances` to resume; the disk and IP are still billed, about $5 a month) |
+| remove everything (except the state and backup buckets) | `infra`: `terraform destroy` (the buckets are protected from deletion) |
 
 ### 13d. Deploys from GitHub Actions (Phase 5)
 
@@ -689,7 +699,7 @@ Every push to `main` deploys itself, with [.github/workflows/deploy.yml](.github
 
 **OIDC, or why GitHub holds no AWS key** ([infra/github.tf](infra/github.tf)): for each run, GitHub signs a short token saying which repository and branch is running. AWS trusts GitHub's signature (the OIDC provider) and trades a token from *this repository's main branch only* for one hour of the `interview-prep-github-deploy` role, which can do one thing: run a command on this server and read its result. A fork, another branch or another repository gets nothing, and there is no key to leak.
 
-**Setup, once:** after `terraform apply`, three repository variables (Settings > Secrets and variables > Actions > Variables; not secrets, nothing in them is sensitive): `AWS_DEPLOY_ROLE_ARN` and `AWS_INSTANCE_ID` (from `terraform output`), and `SITE_URL` (`http://<public_ip>` until the domain exists). After the first image is pushed, make the GHCR package public (on GitHub: your profile > Packages > the package > Package settings > Change visibility), so the server can pull it without a login. The code is public anyway.
+**Setup, once:** after `terraform apply`, three repository variables (Settings > Secrets and variables > Actions > Variables; not secrets, nothing in them is sensitive): `AWS_DEPLOY_ROLE_ARN` (from `terraform output`) and `SITE_URL` (`http://<public_ip>` until the domain exists). After the first image is pushed, make the GHCR package public (on GitHub: your profile > Packages > the package > Package settings > Change visibility), so the server can pull it without a login. The code is public anyway.
 
 | I want to... | How |
 | --- | --- |
@@ -811,7 +821,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 4.8. Admin login with a password; no per-user limits for admins | built and tested: set-password / clear-password, "Admin? Log in with a password", CLI with INTERVIEW_PASSWORD; admins skip the daily and revision limits, budgets and size limits still apply. Setting your own password and the check are yours to do |
 | 4.9. Login and header polish: one email field that asks admins for their password, Continue with Google, the Practiss logo, what's left in the header, instant return to a brief | built and tested: admin detection on "Continue", `POST /auth/google` (migration 0013), the logo (top left, back to a new interview) and app icon, the header shows users what's left and no money, a draft brief is reused with no Claude call. Creating the Google OAuth client id and the check in a browser are yours to do |
-| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) applied: the server runs and answers Session Manager; your AWS login is IAM Identity Center with MFA. Step 4 (deploys from GitHub Actions with OIDC) written: tests in the ARM image, push to GHCR, deploy through SSM Run Command |
+| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) applied: the server runs and answers Session Manager; your AWS login is IAM Identity Center with MFA. Step 4 (deploys from GitHub Actions with OIDC) done: tests in the ARM image, push to GHCR, deploy through SSM Run Command; the app answers on the server's IP. Nightly database backups to S3 and `server.ps1 down / up` (destroy and rebuild without losing data) built; the backup and a restore tested on the server. Next: the domain, HTTPS and SES (step 3) |
 | 6. Streaming, live turn detection, personas and more | planned |
 
 The details of each phase are in [plan.md](plan.md).

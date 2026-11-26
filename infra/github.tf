@@ -5,18 +5,23 @@
 # tokens signed by GitHub. The workflow (.github/workflows/deploy.yml) hands its token to AWS
 # STS, which gives back credentials of the github-deploy role for one hour.
 #
-# The role's trust policy accepts only tokens from THIS repository's main branch, so another
-# repository, a fork or another branch can't use it. And the role can only do one thing: run
+# The role's trust policy accepts only tokens from THIS repository's main branch (the token's
+# "sub", e.g. repo:owner@id/name@id:ref:refs/heads/main), so another repository, a fork or
+# another branch can't use it. A refused login shows the "sub" GitHub sent in CloudTrail. And the role can only do one thing: run
 # a shell command on this server through SSM Run Command (the deploy), and read its result.
 # It can't read the secrets, change the infrastructure or touch anything else in the account.
 #
 # After `terraform apply`, the workflow needs two repository variables (not secrets: neither is
-# sensitive): AWS_DEPLOY_ROLE_ARN = the deploy_role_arn output, AWS_INSTANCE_ID = instance_id.
+# sensitive): AWS_DEPLOY_ROLE_ARN = the deploy_role_arn output, and SITE_URL. It finds the
+# server itself, by its Name tag, so a rebuilt server needs no change in GitHub.
 
 variable "github_repo" {
-  description = "The GitHub repository (owner/name) allowed to deploy"
+  description = "The GitHub repository allowed to deploy, as GitHub writes it in its tokens: owner@owner-id/name@repo-id"
   type        = string
-  default     = "antoine-demyttenaere/interview-prep-voice-agent"
+  # GitHub's tokens name the owner and the repository with their numeric ids (seen in CloudTrail,
+  # AssumeRoleWithWebIdentity events). The ids never change and are never reused, so a repository
+  # deleted and re-created under the same name by someone else could not deploy.
+  default = "antoine-demyttenaere@109357504/interview-prep-voice-agent@1469022852"
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -51,17 +56,26 @@ resource "aws_iam_role" "github_deploy" {
 }
 
 data "aws_iam_policy_document" "github_deploy" {
+  # The server is found by its Name tag, not by its id, because a rebuilt server
+  # (server.ps1 up) gets a new id. Only a server tagged Name=interview-prep can receive commands.
   statement {
-    sid     = "RunCommandOnTheServer"
-    actions = ["ssm:SendCommand"]
-    resources = [
-      aws_instance.server.arn,
-      "arn:aws:ssm:${var.region}::document/AWS-RunShellScript",
-    ]
+    sid       = "RunCommandOnTheServer"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ec2:${var.region}:${data.aws_caller_identity.me.account_id}:instance/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Name"
+      values   = [local.name]
+    }
   }
   statement {
-    sid       = "ReadTheResult" # these two actions can't be limited to one server
-    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]
+    sid       = "WithTheShellScriptDocument"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ssm:${var.region}::document/AWS-RunShellScript"]
+  }
+  statement {
+    sid       = "FindTheServerAndReadTheResult" # these actions can't be limited to one server
+    actions   = ["ec2:DescribeInstances", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]
     resources = ["*"]
   }
 }

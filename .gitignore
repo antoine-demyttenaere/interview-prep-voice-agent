@@ -10,7 +10,7 @@
 # - evals/private/: eval cases built from your real answers; evals/*/runs/: local eval summaries.
 # - Terraform (infra/): .terraform/ (downloaded providers), *.tfstate (the bootstrap's local
 #   state), terraform.tfvars (your email) and backend.hcl (the state bucket's name, with your
-#   AWS account id), *.tfplan (saved plans). .terraform.lock.hcl IS committed: it pins the provider versions.
+#   AWS account id), *.tfplan (saved plans), *.auto.tfvars (server.ps1's on/off switch). .terraform.lock.hcl IS committed: it pins the provider versions.
 
 .env
 my_docs/
@@ -29,3 +29,4 @@ brief_edit.json
 terraform.tfvars
 infra/backend.hcl
 *.tfplan
+*.auto.tfvars

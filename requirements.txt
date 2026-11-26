@@ -8,7 +8,9 @@
 #   connection pool), alembic (table migrations), pgvector (vector column type, used from Phase 3).
 # AI: anthropic (Claude API), langsmith (tracing), langgraph + its Postgres checkpointer
 #   (the interview graph), pyyaml (reads rubrics/*.yaml).
-# Accounts: argon2-cffi (hashes admin passwords with Argon2, the recommended algorithm).
+# AWS: boto3 (AWS's Python library), for sending emails with Amazon SES (app/mail, Phase 5).
+# Accounts: argon2-cffi (hashes admin passwords with Argon2, the recommended algorithm),
+#   google-auth + requests (checks the token of "Continue with Google", app/auth/google.py).
 # ">=" means "this version or newer". After editing this file: docker compose up -d --build
 
 fastapi>=0.115
@@ -29,6 +31,9 @@ langgraph>=0.6
 langgraph-checkpoint-postgres>=2.0
 pyyaml>=6.0
 argon2-cffi>=23.1
+google-auth>=2.35
+requests>=2.32
+boto3>=1.35
 
 # Tests (kept in the same image for now)
 pytest>=8.3

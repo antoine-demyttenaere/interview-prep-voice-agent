@@ -8,6 +8,9 @@
 # - my_docs/: your real CV, job posts and recruiter emails (personal data). Keep them here,
 #   not in samples/, which is committed and holds fictional examples only.
 # - evals/private/: eval cases built from your real answers; evals/*/runs/: local eval summaries.
+# - Terraform (infra/): .terraform/ (downloaded providers), *.tfstate (the bootstrap's local
+#   state), terraform.tfvars (your email) and backend.hcl (the state bucket's name, with your
+#   AWS account id), *.tfplan (saved plans). .terraform.lock.hcl IS committed: it pins the provider versions.
 
 .env
 my_docs/
@@ -20,3 +23,9 @@ __pycache__/
 .langgraph_api/
 evals/audio/
 brief_edit.json
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+infra/backend.hcl
+*.tfplan

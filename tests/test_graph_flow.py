@@ -11,6 +11,8 @@ them inside nodes.py) and returns fixed answers; it asks for a follow-up wheneve
   a fresh app instance resumes the session where it stopped.
 - test_language_reaches_the_prompts: a French interview asks Claude for French.
 - test_end_early_* / test_end_endpoint: ending early gives feedback on the answers so far.
+- test_back_to_a_draft_brief_is_instant: a brief not approved yet is kept as a draft, and
+  going back to it (review_brief) makes no Claude call; changing the interview clears it.
 
     docker compose exec api pytest -q
 """
@@ -180,3 +182,24 @@ def test_back_to_the_brief_from_an_interview(fake):
         assert view["pending"]["type"] == "answer" and view["pending"]["q_index"] == 0  # fresh questions
         # the first session is untouched and can still be continued
         assert client.get(f"/sessions/{first['session_id']}").json()["pending"]["q_index"] == 1
+
+
+def test_back_to_a_draft_brief_is_instant(fake):
+    """Going back to a brief that was written but not approved reuses it: no new Claude call."""
+    from app.main import app
+
+    with TestClient(app) as client:
+        iv = client.post("/interviews", json={"company": f"Fake {uuid.uuid4().hex[:6]}", "role": "Eng"}).json()
+        client.post("/documents", json={"interview_id": iv["id"], "doc_type": "job_post", "text": "Python"})
+        view = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 2}).json()
+        assert view["pending"]["type"] == "review_brief" and fake.calls.count("InterviewBrief") == 1
+        assert client.get(f"/interviews/{iv['id']}").json()["brief_status"] == "draft"
+
+        calls = len(fake.calls)
+        again = client.post(f"/interviews/{iv['id']}/sessions", json={"num_questions": 3, "review_brief": True}).json()
+        assert again["pending"]["type"] == "review_brief" and again["session_id"] != view["session_id"]
+        assert again["pending"]["brief"] == view["pending"]["brief"]
+        assert len(fake.calls) == calls  # no Claude call at all
+
+        client.patch(f"/interviews/{iv['id']}", json={"role": "Senior Eng"})  # the brief must be redone
+        assert client.get(f"/interviews/{iv['id']}").json()["brief_status"] == "none"

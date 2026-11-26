@@ -1,13 +1,21 @@
 """The account routes: log in (or sign up) with a code sent by email, log out, and "who am I?".
 
-- POST /auth/start        {email} -> emails a 6-digit login code; always the same answer (202)
+- GET  /auth/config       {google_client_id, turnstile_site_key}: what the login screen offers
+- POST /auth/start        {email, use_code?, turnstile_token?} -> {method: "code"}: emails a 6-digit login code, or
+                          {method: "password"} for an admin with a password (no email; the page
+                          then asks for the password). use_code=true always sends a code.
 - POST /auth/verify       {email, code} -> checks it, creates the account the first time, logs in
                           (sets the "login" cookie), returns {email, is_admin, new_account}
 - POST /auth/password-login {email, password} -> admins only (Phase 4.8): same cookie as a code login
+- POST /auth/google       {credential} -> "Continue with Google": checks Google's ID token
+                          (app/auth/google.py), creates the account the first time, logs in
 - POST /auth/logout       deletes this login (the cookie stops working at once) and clears it
 - GET  /auth/me           {email, is_admin} of the logged-in user, or 401
 - POST /auth/delete-code  emails a code to confirm deleting your account
 - DELETE /auth/me         {code} -> deletes your account and all your data (app/auth/account.py)
+
+With Turnstile on (TURNSTILE_SECRET_KEY set, Phase 5), /auth/start first checks the page's
+Turnstile token (turnstile.py) and answers 400 without a valid one, so bots can't send emails.
 
 Mounted by app/main.py. Uses codes.py (the codes), limits.py (too many attempts: 429), deps.py
 (who is logged in) and app/mail (sending the email). The web page (web/app.js) and the terminal
@@ -15,14 +23,21 @@ client (scripts/interview_cli.py) both call these routes.
 
 Most people have no password (Phase 4.7): typing the code back proves the inbox is yours, so the
 same two steps sign up a new person and log in an existing one. An admin can also set a password
-(Phase 4.8, scripts/manage_users.py set-password) and log in with it; a wrong password, a
-non-admin email and an admin without a password all get the same answer, so the form doesn't
-reveal who is an admin. The code login keeps working for admins too, as a fallback. Anyone with a real inbox can sign up;
-quotas and budgets (app/costs/) decide what they can use.
+(Phase 4.8, scripts/manage_users.py set-password) and log in with it. The login screen has one
+email field: /auth/start answers "password" for an admin with a password, so the page asks for
+it, and "code" for everyone else. That reveals which emails are admins with a password (an
+accepted trade-off: the password login is rate-limited and Argon2-hashed); a wrong password
+still gets one identical answer whatever the reason. The code login keeps working for admins
+too, as a fallback ("Send me a code instead", use_code=true). Anyone with a real inbox or a
+Google account can sign up; quotas and budgets (app/costs/) decide what they can use.
 
-What "send me a code" answers never depends on the email: a new address, an existing account
-or a disabled one (which gets no email) all get "check your inbox". So nobody can find out who
-has an account. A wrong, expired or used code always gets the same message too.
+For everyone else, what "Continue" answers never depends on the email: a new address, an
+existing account or a disabled one (which gets no email) all get "check your inbox". So nobody
+can find out who has an account. A wrong, expired or used code always gets the same message too.
+
+Google (Phase 4.9): Google has already checked the email, so its ID token stands in for the
+code. The account is found by Google's id (users.google_sub), else by the same email (and then
+linked to that Google id), else created.
 
 The cookie, in short: the browser stores it and sends it back with every request to this
 server. It is
@@ -42,6 +57,7 @@ from sqlalchemy.orm import Session as DB
 from app.auth import limits
 from app.auth.account import delete_account
 from app.auth.codes import check_code, issue_code
+from app.auth import google, turnstile
 from app.auth.deps import current_login, current_user
 from app.auth.passwords import check_password, hash_password, needs_rehash
 from app.auth.tokens import COOKIE_NAME, hash_token, new_token
@@ -55,6 +71,9 @@ router = APIRouter(prefix="/auth", tags=["accounts"])
 CODE_SENT = "If this email can be used, a code is on its way. Check your inbox (and spam folder)."
 WRONG_CODE = "This code is wrong or has expired. Check the latest email, or ask for a new code."
 WRONG_PASSWORD = "Wrong email or password. (Password login is for admins; everyone else uses a code.)"
+ENTER_PASSWORD = "Enter your password."
+GOOGLE_REFUSED = "Google sign-in didn't work. Try again, or continue with your email."
+NOT_A_PERSON = "The check that you're a person didn't pass. Wait for it to finish, or reload the page."
 EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # something@something.something
 
 
@@ -104,20 +123,37 @@ def _start_login(db: DB, user: User, response: Response) -> None:
     )
 
 
+@router.get("/config")
+def config() -> dict:
+    """What the login screen can offer: the Google button needs the app's public client id, and
+    the Turnstile widget its public site key (None = not shown)."""
+    settings = get_settings()
+    return {"google_client_id": settings.google_client_id or None,
+            "turnstile_site_key": settings.turnstile_site_key or None}
+
+
 class StartIn(BaseModel):
     email: str
+    use_code: bool = False  # an admin who wants a code rather than the password
+    turnstile_token: str = ""  # from the page's Turnstile widget (needed when Turnstile is on)
 
 
 @router.post("/start", status_code=202)
 def start(body: StartIn, request: Request, db: DB = Depends(get_db)) -> dict:
-    """Send a login code. The account itself is only created once the code comes back."""
+    """Send a login code, or tell the page to ask an admin for their password. The account
+    itself is only created once the code comes back."""
     email, ip = _valid_email(body.email), limits.client_ip(request)
+    if turnstile.enabled() and not turnstile.verify_token(body.turnstile_token, ip):
+        raise HTTPException(400, NOT_A_PERSON)
     limits.check_code_request(db, email, ip)
-    limits.record(db, "code_sent", ip, email)
+    limits.record(db, "code_sent", ip, email)  # also counts password checks, so probing is limited
     user = db.scalar(select(User).where(User.email == email))
-    if not (user and user.disabled_at):  # a disabled account gets no email, but the same answer
+    active = user is not None and user.disabled_at is None
+    if active and user.is_admin and user.password_hash and not body.use_code:
+        return {"detail": ENTER_PASSWORD, "method": "password"}
+    if active or user is None:  # a disabled account gets no email, but the same answer
         _send_code(db, email, "login")
-    return {"detail": CODE_SENT}
+    return {"detail": CODE_SENT, "method": "code"}
 
 
 class VerifyIn(BaseModel):
@@ -166,6 +202,43 @@ def password_login(body: PasswordLoginIn, request: Request, response: Response, 
     limits.clear_login_failures(db, email)
     _start_login(db, user, response)
     return {**user_out(user), "new_account": False}
+
+
+class GoogleIn(BaseModel):
+    credential: str  # the ID token Google gave the page
+
+
+@router.post("/google")
+def google_login(body: GoogleIn, request: Request, response: Response, db: DB = Depends(get_db)) -> dict:
+    """Continue with Google: log in, or sign up the first time, with a Google ID token."""
+    client_id = get_settings().google_client_id
+    if not client_id:
+        raise HTTPException(404, "Google sign-in is not set up on this server.")
+    ip = limits.client_ip(request)
+    try:
+        claims = google.verify_token(body.credential, client_id)
+    except ValueError:
+        raise HTTPException(401, GOOGLE_REFUSED)
+    if not claims.get("email_verified") or not claims.get("email") or not claims.get("sub"):
+        raise HTTPException(401, GOOGLE_REFUSED)
+    email, sub = _valid_email(claims["email"]), str(claims["sub"])
+    limits.check_login(db, email, ip)
+
+    user = db.scalar(select(User).where(User.google_sub == sub))         or db.scalar(select(User).where(User.email == email))
+    if user and (user.disabled_at or (user.google_sub and user.google_sub != sub)):
+        limits.record(db, "login_failed", ip, email)
+        raise HTTPException(401, GOOGLE_REFUSED)
+    new_account = user is None
+    if new_account:
+        user = User(email=email)
+        db.add(user)
+    user.google_sub = sub
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(timezone.utc)
+    db.flush()
+    limits.clear_login_failures(db, email)
+    _start_login(db, user, response)
+    return {**user_out(user), "new_account": new_account}
 
 
 @router.post("/logout", status_code=204)

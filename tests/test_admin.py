@@ -2,7 +2,9 @@
 
 They check that:
 - an admin with a password logs in with it (same cookie as a code login), and the code login
-  still works for that admin as a fallback;
+  still works for that admin as a fallback (use_code);
+- "Continue" (POST /auth/start) asks an admin with a password for it, without sending a code,
+  while an admin without a password, a normal account and a new email get a code;
 - a wrong password, a non-admin account that somehow has a password, an admin without a password,
   an unknown email and a disabled admin all get the same 401 and message;
 - the guessing limit applies: the 6th wrong password in the window is blocked, even when right;
@@ -55,9 +57,22 @@ def test_admin_logs_in_with_a_password_or_a_code(real_auth, mailbox):
         assert client.get("/auth/me").json()["email"] == admin.email
         client.post("/auth/logout")
 
-        client.post("/auth/start", json={"email": admin.email})  # the code login still works
+        client.post("/auth/start", json={"email": admin.email, "use_code": True})  # the code still works
         assert client.post("/auth/verify", json={"email": admin.email,
                                                  "code": mailbox.code_for(admin.email)}).status_code == 200
+
+
+def test_continue_asks_an_admin_for_the_password(real_auth, mailbox):
+    admin = _user(is_admin=True)
+    no_password = _user(password=None, is_admin=True)
+    plain = _user(password=None)
+    with TestClient(app) as client:
+        res = client.post("/auth/start", json={"email": admin.email})
+        assert res.status_code == 202 and res.json()["method"] == "password"
+        assert admin.email not in [m["to"] for m in mailbox.sent]  # no code sent
+        for email in (no_password.email, plain.email, f"new-{uuid.uuid4().hex[:6]}@example.com"):
+            assert client.post("/auth/start", json={"email": email}).json()["method"] == "code"
+            assert mailbox.sent[-1]["to"] == email
 
 
 def test_every_refusal_looks_the_same(real_auth):

@@ -1,6 +1,8 @@
 """Routes to run a practice session: the bridge between HTTP requests and the graph.
 
 - POST /interviews/{id}/sessions  creates a session and runs the graph to its first pause
+- GET  /sessions                  your 10 latest sessions (company, role, practice or interview,
+                                  brief / interview / done), for the page's account menu
 - GET  /sessions/{id}             what the session is waiting for (or the final feedback)
 - POST /sessions/{id}/resume      sends your reply to the pause: a brief decision or an answer
 - POST /sessions/{id}/retry       re-runs a step that failed (e.g. a Claude error)
@@ -28,7 +30,10 @@ left, a new session is refused (429) before any Claude call.
 Each call runs the graph until it pauses again (interrupt()) and returns a "view": status
 (waiting / done / stopped), pending (what it is waiting for), and final_feedback at the end.
 The checkpointer saves the graph's state under thread_id = session id. After each run, _run()
-copies the approved brief and the end time into our own tables.
+copies the brief and the end time into our own tables. A brief waiting for review is kept as a
+"draft" on the interview, so going back to it (review_brief=true, e.g. after changing only the
+number of questions) reuses it at once instead of asking Claude for a new one. PATCH
+/interviews/{id} (company, role, documents changed) clears it.
 
 A voice turn is three steps: speech-to-text (Deepgram) -> the graph (same as a typed answer)
 -> text-to-speech (ElevenLabs) for the next question. It returns the view plus what was heard,
@@ -151,9 +156,11 @@ def _run(graph, session: Session, graph_input, db: DB) -> dict:
         raise HTTPException(502, f"Claude call failed: {exc}. POST /sessions/{session.id}/retry to try again.")
 
     values = graph.get_state(_config(session)).values or {}
-    if values.get("brief_approved") and values.get("brief") != interview.brief:
-        interview.brief = values["brief"]
-        interview.brief_status = "approved"
+    brief = values.get("brief")
+    if brief and values.get("brief_approved"):
+        interview.brief, interview.brief_status = brief, "approved"
+    elif brief and interview.brief_status != "approved":  # written, not approved yet: keep it
+        interview.brief, interview.brief_status = brief, "draft"
     if values.get("questions") and session.questions_started_at is None:
         session.questions_started_at = datetime.now(timezone.utc)  # counts as one of today's interviews
     if values.get("final_feedback") and session.ended_at is None:
@@ -185,7 +192,8 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
         raise HTTPException(422, "Add at least one document (job post, email, notes or CV) first")
 
     approved = interview.brief_status == "approved" and interview.brief
-    # Going back to the brief from an interview: start at the review, with the same brief.
+    # Going back to the brief (from an interview, or from the form with nothing it depends on
+    # changed): start at the review, with the same brief (approved or still a draft).
     review_again = body.review_brief and interview.brief
     if approved and not review_again:
         check_can_start_interview(db, user, kind)  # this goes straight to planning the questions
@@ -212,6 +220,34 @@ def start_session(interview_id: uuid.UUID, body: SessionIn, request: Request, db
         "brief_approved": bool(approved) and not review_again,
     }
     return _run(request.app.state.graph, session, initial, db)
+
+
+@router.get("/sessions")
+def list_sessions(db: DB = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    """Your 10 latest sessions, newest first, for the account menu on the page.
+
+    The status comes from our own columns, so no checkpoint is read: "done" once the session has
+    ended (feedback written), "interview" once its questions are planned, else "brief".
+    """
+    rows = db.execute(
+        select(Session, Interview)
+        .join(Interview, Session.interview_id == Interview.id)
+        .where(Interview.user_id == user.id)
+        .order_by(Session.started_at.desc())
+        .limit(10)
+    ).all()
+    return [
+        {
+            "session_id": str(s.id),
+            "company": iv.company,
+            "role": iv.role,
+            "mode": iv.mode,
+            "kind": s.kind,
+            "started_at": s.started_at.isoformat(),
+            "status": "done" if s.ended_at else "interview" if s.questions_started_at else "brief",
+        }
+        for s, iv in rows
+    ]
 
 
 @router.get("/sessions/{session_id}")

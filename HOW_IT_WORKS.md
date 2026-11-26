@@ -70,6 +70,10 @@ Everything except Claude, Deepgram, ElevenLabs, Voyage AI and LangSmith runs on 
 | **httpx** | A Python HTTP client, used to call Deepgram and ElevenLabs. | app/voice/ |
 | **MediaRecorder** | The browser's built-in recorder: it captures the microphone between your clicks on the button. | [web/app.js](web/app.js) |
 | **pytest** | Runs the automated tests. | [tests/](tests/) |
+| **Caddy** | A web server placed in front of the app in production (a **reverse proxy**: it receives every request from the internet and passes it on to the app). It gets and renews the HTTPS certificate by itself. | [Caddyfile](Caddyfile), [docker-compose.prod.yml](docker-compose.prod.yml) |
+| **Amazon SES** (with **boto3**) | AWS's email-sending service, which really delivers the login codes on AWS. boto3 is AWS's Python library. | [app/mail](app/mail/__init__.py) |
+| **Terraform** | Describes cloud resources (network, server, permissions...) in text files; `terraform plan` shows what would change and `terraform apply` creates or changes them, so the AWS setup is reviewable and repeatable instead of clicked by hand. | [infra/](infra/) |
+| **Cloudflare Turnstile** | A free "are you a person?" check, usually invisible, so bots can't make the server send emails. | [app/auth/turnstile.py](app/auth/turnstile.py), [web/app.js](web/app.js) |
 
 ---
 
@@ -87,17 +91,19 @@ app/
   auth/                Accounts (Phase 4.6)
     codes.py           The 6-digit login codes sent by email: make one, check one (stored as an HMAC)
     passwords.py       Admin passwords: hash and check them (Argon2)
+    google.py          "Continue with Google": checks Google's ID token (google-auth)
+    turnstile.py       Cloudflare Turnstile: checks the page's "you're a person" token before a code is sent
     tokens.py          The random login token in the cookie, and its hash
     deps.py            current_user: who is calling, or 401
     ownership.py       owned_interview / owned_document / owned_session: yours, or 404
     limits.py          Guessing limits: failed logins per email and per IP, registrations per IP (429)
     origin.py          Refuses POST / PATCH / DELETE sent from another website's page (403)
     account.py         Deletes an account and everything it owns, checkpoints included
-    routes.py          /auth/login, /auth/logout, /auth/me
+    routes.py          /auth/config, /auth/start, /auth/verify, /auth/password-login, /auth/google, /auth/logout, /auth/me
   api/
     interviews.py      Interviews, and documents: paste, upload, list the CV, delete
-    sessions.py        Start a session, resume it with your reply, retry a failed step
-    usage.py           GET /usage: your spend and what's left; POST /access-requests ("Request more"); grant_more
+    sessions.py        Start a session, resume it with your reply, retry a failed step; list your latest sessions
+    usage.py           GET /usage: what's left (an admin: spend and budgets); POST /access-requests ("Request more"); grant_more
   graph/               The interviewer (LangGraph)
     state.py           What the graph remembers (the "state")
     nodes.py           The 7 steps and the 3 routing functions
@@ -105,6 +111,8 @@ app/
     schemas.py         The shapes Claude must answer in (brief, plan, scores, feedback)
     prompts.py         Loads prompts/*.md and rubrics/*.yaml
     checkpointer.py    Saves the graph's progress in Postgres
+  mail/
+    __init__.py        Sending email: console (prints it in the logs, local) or Amazon SES (AWS)
   voice/
     __init__.py        SpeechError, and the supported languages (en, fr, es)
     stt.py             Speech-to-text: the interface + Deepgram
@@ -119,7 +127,7 @@ app/
   db/
     models.py          Tables as Python classes: Interview, Document, Chunk, QuestionBankItem, Session, User, LoginSession, EmailCode, AuthAttempt, AccessRequest, Usage, QuestionAudio
     session.py         Database connection, and get_db() for routes
-    migrations/        Alembic: env.py, the template, and versions/0001 to 0012
+    migrations/        Alembic: env.py, the template, and versions/0001 to 0013
 prompts/               Every text sent to Claude, one file per step, plus modes/ (the 4 interview types)
 rubrics/               Scoring criteria per interview type (YAML)
 question_bank/         Seeded questions for the technical backend and system design types (YAML)
@@ -135,13 +143,35 @@ scripts/
 web/
   index.html           The web page: login, setup (3 steps + My CV), brief, interview, feedback
   app.js               Its logic: login, API calls, click-to-talk recording, audio playback, end / leave
-  style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark
+  style.css            Its look: a 7-color palette (listed in CLAUDE.md), two columns on wide screens, light / dark.
+                       It borrows the logo's shapes: rounded-square icon tiles, the coral dot after page titles,
+                       and the sound bars (on the record button and the floating "working" pill)
+  brand/               The Practiss logo: logo-header.png (light) and logo-header-dark.png in the header,
+                       app-icon.png on the login card, as the interviewer's avatar in the conversation and
+                       as the browser-tab icon; logo-horizontal*.png
+                       and logo-stacked.png are the full logos with the tagline, kept for later use
 samples/               A fictional job post and CV for testing
 my_docs/               Your real CV, job posts and emails (ignored by git: never committed)
 tests/                 Tests with a fake Claude, fake speech and a fake embedder, on their own database
 evals/audio/           Your recorded answers, when SAVE_AUDIO=true (never committed)
-docker-compose.yml     The two containers: api and db
+docker-compose.yml     The two containers: api and db (your laptop, with --reload)
+docker-compose.prod.yml  Production mode (AWS, or a try on your laptop): caddy, api from its image, db; see 13b
+Caddyfile              Caddy's settings: HTTPS for SITE_ADDRESS, then pass everything to the api
+infra/                 The AWS setup in Terraform (Phase 5); see 13c
+  bootstrap/main.tf    Once: the S3 bucket that keeps Terraform's state (writes infra/backend.hcl)
+  main.tf              Settings, inputs (variables) and outputs (the server's IP, the shell command)
+  network.tf           VPC, public subnet, internet gateway, firewall (ports 80 and 443 only, no SSH)
+  iam.tf               What the server may do: Session Manager, send email with SES, read its secrets
+  server.tf            The EC2 server (t4g.micro), its encrypted disk, its fixed IP, weekly snapshots
+  budget.tf            Emails you when the month's AWS bill heads past $10
+  github.tf            Lets GitHub Actions deploy with OIDC: a role that can only run the deploy on the server
+  user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app's folder, deploy.sh
+  deploy.sh            Runs on the server: .env from the SSM secrets, pull the image, restart, wait for /health
+  set-secrets.ps1      Stores the API keys and secrets in SSM Parameter Store (typed, never in git)
+  terraform.tfvars.example  Template for your own values (your alert email)
 Dockerfile             How the api image is built
+.github/workflows/deploy.yml  On each push to main: test in the ARM image, push it to GHCR, deploy it (see 13d)
+.gitattributes         Keeps Linux line endings for the files that run on the server
 requirements.txt       Python packages
 alembic.ini            Alembic settings
 pytest.ini             pytest settings
@@ -165,23 +195,25 @@ This section follows one real session through the code.
 `docker compose up -d` starts two containers ([docker-compose.yml](docker-compose.yml)):
 
 1. **db** starts Postgres. Compose waits until it accepts connections (the `healthcheck`).
-2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0012). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
+2. **api** runs `alembic upgrade head`, which creates any missing tables (migrations 0001 to 0013). It then runs [seed_question_bank.py](scripts/seed_question_bank.py), which loads `question_bank/*.yaml` into the database and embeds any new question (if Voyage is unreachable it says so and carries on). Finally it starts uvicorn on port 8000. Both ports (8000 for the app, 5433 for Postgres) are bound to `127.0.0.1`, so only your own computer can reach them, not other devices on your Wi-Fi. That matters because the database password is simply `app`, and the API serves your stored CV and documents.
 3. While starting, [app/main.py](app/main.py) (`lifespan`) opens a pool of database connections. It then calls `saver.setup()`, which creates LangGraph's checkpoint tables if they don't exist, and builds the graph with `build_graph().compile(checkpointer=saver)`.
 
 You can check it with `GET http://localhost:8000/health` → `{"status":"ok","db":"ok","pgvector":"0.8.7"}`.
 
 ### Step 0b: you log in (or sign up) with a code sent by email
 
-Every interview and session route needs a login; only `/health`, `/auth/start`, `/auth/verify` and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them. There are **no passwords** (Phase 4.7): typing back a code sent to your inbox proves it's yours, so the same two steps sign up a new person and log in an existing one.
+Every interview and session route needs a login; only `/health`, the `/auth/*` login routes and the page itself are public. [app/main.py](app/main.py) mounts those routes with `dependencies=[Depends(current_user)]`, so FastAPI runs [deps.py](app/auth/deps.py) before each of them. There are **no passwords** (Phase 4.7): typing back a code sent to your inbox proves it's yours, so the same two steps sign up a new person and log in an existing one.
 
-1. **Your email:** the page calls `GET /auth/me` on load; a 401 shows the login screen. You type your email and `POST /auth/start` ([routes.py](app/auth/routes.py)) makes a 6-digit code ([codes.py](app/auth/codes.py)) and emails it through [app/mail](app/mail/__init__.py). Locally the "console" provider doesn't send anything: it prints the email in `docker compose logs api`, where you read the code. (Amazon SES, to really send emails, comes with Phase 5.)
+1. **Your email:** the page calls `GET /auth/me` on load; a 401 shows the login screen. You type your email and click **Continue**. `POST /auth/start` ([routes.py](app/auth/routes.py)) answers `{"method": "password"}` for an admin who has a password (the page then asks for it, see below), and `{"method": "code"}` for everyone else: it makes a 6-digit code ([codes.py](app/auth/codes.py)) and emails it through [app/mail](app/mail/__init__.py). Locally the "console" provider doesn't send anything: it prints the email in `docker compose logs api`, where you read the code. On AWS, `MAIL_PROVIDER=ses` sends it with Amazon SES, using the server's IAM role (see 13b). With Turnstile on (AWS), the page first gets a token from Cloudflare that `/auth/start` checks (see Step 0b-ter).
 2. **The code:** you type it and `POST /auth/verify` checks it. The first time, it creates your account (marked `email_verified_at`). Then it creates a random token ([tokens.py](app/auth/tokens.py)), stores its SHA-256 hash in `login_sessions`, and sends the token back as a **cookie** named `login`.
 3. **Every request after that:** the browser sends the cookie by itself. `current_user` hashes it, finds the matching `login_sessions` row (not expired, account not disabled) and lets the request through. Otherwise it's a 401, and the page shows the login screen again; logging in continues where you were.
 4. **Log out:** `POST /auth/logout` deletes the row, so that cookie stops working at once, even if someone copied it. The page also forgets its session id and draft (the browser may be shared).
 
 Your own admin account is made once with `docker compose exec api python scripts/create_user.py --email you@example.com --admin`. Admin accounts can only be made this way.
 
-**Admins can also have a password** (Phase 4.8), so they don't depend on reading codes. `create_user.py --admin` offers to set one, and `manage_users.py set-password EMAIL` sets or changes it (at least 12 characters, typed twice; it refuses non-admin accounts and ends the admin's other logins; `clear-password` removes it). Only its **Argon2 hash** is stored ([passwords.py](app/auth/passwords.py)): a one-way fingerprint, deliberately slow, so a stolen database can only be guessed at very slowly. On the login screen, **Admin? Log in with a password** opens an email + password form (`POST /auth/password-login`). A wrong password, a non-admin email, an admin without a password and a disabled admin all get the same answer (and the check takes the same time), so the form doesn't reveal who is an admin; the guessing limits below apply to it too. The code login keeps working for admins, as a fallback.
+**Admins can also have a password** (Phase 4.8), so they don't depend on reading codes. `create_user.py --admin` offers to set one, and `manage_users.py set-password EMAIL` sets or changes it (at least 12 characters, typed twice; it refuses non-admin accounts and ends the admin's other logins; `clear-password` removes it). Only its **Argon2 hash** is stored ([passwords.py](app/auth/passwords.py)): a one-way fingerprint, deliberately slow, so a stolen database can only be guessed at very slowly. On the login screen there is one email field: for an admin with a password, **Continue** asks for the password instead of sending a code (`POST /auth/password-login`). This tells anyone who types an email whether it belongs to an admin with a password; that is an accepted trade-off, because the password is Argon2-hashed and the guessing limits below apply (each "Continue" also counts as a code request). A wrong password, a non-admin email, an admin without a password and a disabled admin still all get the same answer from the password route. **Send me a code instead** (`use_code: true`) keeps the code login as a fallback; the CLI always asks for a code unless `INTERVIEW_PASSWORD` is set.
+
+**Continue with Google** (Phase 4.9) is the other way in, in one click. When `GOOGLE_CLIENT_ID` is set in `.env`, `GET /auth/config` gives it to the page, which loads Google's sign-in script (Google Identity Services, from accounts.google.com) and shows Google's own button. Picking your Google account hands the page an **ID token**: a small JSON note signed by Google saying who you are (your Google id `sub`, your email, whether Google has verified it) and which app it was made for. `POST /auth/google` checks it with Google's public keys ([google.py](app/auth/google.py), the official `google-auth` library): the signature, the expiry, and that it was made for our client id, so a token from another site is refused. The account is found by its Google id (`users.google_sub`, migration 0013), else by the same email, which links it, else it is created; the email must be verified by Google. Then it's the same cookie as a code login. To set it up: Google Cloud Console > APIs & Services > Credentials > Create an **OAuth client ID** of type "Web application", add `http://localhost:8000` (later the AWS address) under "Authorized JavaScript origins", put its id in `.env` as `GOOGLE_CLIENT_ID`, then `docker compose up -d --force-recreate api`. Without it, the button doesn't show.
 
 Why these choices:
 - **The code:** 6 random digits, valid 10 minutes (`CODE_MINUTES`), at most 5 wrong tries (`CODE_MAX_TRIES`), one use. Asking for a new code makes the older ones useless, so only the latest email counts. A login code and a "delete my account" code are separate, so one can't be used for the other.
@@ -193,9 +225,10 @@ The terminal CLI logs in the same way: it asks for your email (or reads `INTERVI
 
 ### Step 0b-ter: what protects the accounts
 
-- **Guessing and flooding limits** ([limits.py](app/auth/limits.py)): each code sent and each wrong code is a row in `auth_attempts` (migration 0008). At most 3 codes per email and 10 per IP address are sent in 15 minutes (`CODES_PER_EMAIL`, `CODES_PER_IP`), so nobody can fill someone's inbox. After 5 wrong codes for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right code, and the check runs before the code is looked at, so the answer reveals nothing. A successful login clears the email's failures. One IP address also gets at most 20 wrong codes in the window (`LOGIN_MAX_FAILURES_PER_IP`). The counts are in Postgres, not in memory, so they hold with several servers. The trade-off: someone who knows your email can lock it for 15 minutes.
+- **"Are you a person?" before an email is sent** ([turnstile.py](app/auth/turnstile.py), Phase 5): on AWS, the login page loads Cloudflare Turnstile, which looks at the browser and hands the page a token (most people never see anything; a few get one click). `POST /auth/start` asks Cloudflare whether the token is genuine (with `TURNSTILE_SECRET_KEY`) and answers 400 without one, before any email is sent. Without it, a script could make the server email thousands of strangers, which costs money and gets the domain marked as spam. A token works once, so the page resets the widget after each use ("Send a new code" gets a fresh one). It is off when the keys are empty, as on your laptop; the terminal CLI can't show the widget, so on AWS it logs in with an admin password.
+- **Guessing and flooding limits** ([limits.py](app/auth/limits.py)): each code sent and each wrong code is a row in `auth_attempts` (migration 0008). At most 3 codes per email and 10 per IP address are sent in 15 minutes (`CODES_PER_EMAIL`, `CODES_PER_IP`), so nobody can fill someone's inbox. After 5 wrong codes for one email in 15 minutes, that email is refused with **429** ("Too Many Requests") until the oldest failure is older than 15 minutes, even with the right code, and the check runs before the code is looked at, so the answer reveals nothing. A successful login clears the email's failures. One IP address also gets at most 20 wrong codes in the window (`LOGIN_MAX_FAILURES_PER_IP`). The counts are in Postgres, not in memory, so they hold with several servers. In production every request comes through Caddy, so uvicorn takes the visitor's IP from the `X-Forwarded-For` header Caddy adds, and trusts that header from Caddy's fixed address only (`--forwarded-allow-ips`): otherwise every visitor would share Caddy's address, or a bot could fake a new IP on every request. The trade-off: someone who knows your email can lock it for 15 minutes.
 - **Origin check** ([origin.py](app/auth/origin.py)): a **middleware** (code that runs around every request, added in [main.py](app/main.py)) refuses a POST / PUT / PATCH / DELETE whose `Origin` header isn't this server, with 403. Browsers add that header to such requests and pages can't fake it. This stops **CSRF** (cross-site request forgery: a malicious page making your browser send a request here with your cookie). `SameSite=Lax` already blocks other sites, but every port of `localhost` counts as the same site, so another local app could otherwise get through. Requests with no `Origin` (the CLI, curl, tests) don't come from a page and pass.
-- **Delete my account** ("Your account" at the bottom of the setup page): **Email me a code** (`POST /auth/delete-code`) sends a code made only for this, and typing it (`DELETE /auth/me`) confirms. That proves the inbox is still yours, so someone using a browser you left logged in can't delete your account. Then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the login screen says where data goes.
+- **Delete my account** (the account menu, opened by a click on your initial at the top right, then "Delete my account…", which opens a dialog): **Email me a code** (`POST /auth/delete-code`) sends a code made only for this, and typing it (`DELETE /auth/me`) confirms. That proves the inbox is still yours, so someone using a browser you left logged in can't delete your account. Then [account.py](app/auth/account.py) deletes the LangGraph checkpoints of each of your sessions (`checkpointer.delete_thread`, since they have no foreign key) and their recordings in `evals/audio/`, then the user row; the database deletes the rest by itself (**ON DELETE CASCADE**: interviews, sessions, documents, chunks, logins). Copies already sent to outside services (LangSmith, the AI and speech providers) can't be deleted from here; the README's Privacy section says where data goes.
 - **Admin** ([manage_users.py](scripts/manage_users.py)): `list` (with when each email was verified), `disable EMAIL` (logged out at once, no login code is sent any more, data kept), `enable EMAIL`, `delete EMAIL` (asks you to type the email again). There are no passwords to reset.
 
 ### Step 0b-quater: your practice, your interviews, and "Request more"
@@ -208,7 +241,7 @@ Each account can start a set number of sessions in all (Phase 4.7, [budget.py](a
 4. **Request more.** Once nothing is left, the setup page shows a **Request more** box (with an optional message). `POST /access-requests` ([usage.py](app/api/usage.py)) saves an `access_requests` row (one pending at a time) and emails the admins. You see pending requests with `manage_users.py requests` and grant with `manage_users.py grant EMAIL --interviews 2` (or `--practices 1`), which adds to the quota, closes the request and emails the person.
 5. **The practice budget:** practices together may spend `BUDGET_PRACTICE_MONTHLY_USD` ($3) a month and `BUDGET_PRACTICE_DAILY_USD` ($0.75) a day, inside the global budget (usage rows are linked to their session, whose `kind` says it was a practice). When it's used up, new practices get 503, while interviews carry on.
 
-`GET /usage` returns what's left (`practice_left`, `interviews_left`, `next_session`, `request_pending_since`), and the header shows it: "This month: $0.30 · 2 interviews left".
+`GET /usage` returns what's left (`practice_left`, `interviews_left`, `next_session`, `request_pending_since`), and the header shows it: "Practice + 2 interviews left", then "2 interviews left", then "No interviews left". Users never see money.
 
 ### Step 0c: you only see your own data
 
@@ -294,7 +327,9 @@ The web page shows the brief as six numbered cards you scroll from left to right
 
 **How the pause and resume work:** LangGraph reloads the saved state and runs `review_brief` again from its first line. This time `interrupt(...)` doesn't pause: it returns your reply. The node returns `brief_approved: True`, or `brief_feedback` if you asked for changes. The routing function `route_after_review` then sends the graph to `plan_questions`, or back to `prepare_brief`, which rewrites the brief using [prompts/revise_brief.md](prompts/revise_brief.md).
 
-After the run, `_run()` copies the approved brief into the `interviews` table (`brief_status = "approved"`). A later session for the same interview skips straight to the questions.
+After each run, `_run()` copies the brief into the `interviews` table: `brief_status = "draft"` while it waits for review, `"approved"` once approved. A later session for the same interview skips straight to the questions when it is approved. Going back to the brief reuses it at once, with no Claude call (`review_brief: true`), whether it is approved or still a draft: from the interview ("Back to the brief"), or from the setup form when nothing it depends on changed (only the number of questions or the length may differ). Changing the company, role, type, language or documents goes through `PATCH /interviews/{id}`, which clears it, so the next session writes a new one.
+
+On the page, files you chose and a pasted CV are sent once and then cleared from the form (they're listed as "already added"), so going back to the form doesn't see them as new.
 
 ### Step 4: the questions are planned
 
@@ -469,7 +504,7 @@ All calls go through [app/llm.py](app/llm.py):
 - **A failed Claude call** leaves the session at its last checkpoint, with status `stopped`. `POST /sessions/{id}/retry` runs the graph again from there with `graph.invoke(None, config)`, which re-runs the step that failed. The CLI offers this automatically.
 - **A wrong reply** (text when a brief decision is expected, or the reverse) is rejected with `422` before the graph runs, so the session is unaffected.
 - **Speech problems**: if Deepgram fails (`502`) or hears nothing (`422`), the graph isn't touched and you answer the same question again. If ElevenLabs fails, the turn still counts and `audio_error` explains why there is no voice.
-- **Reloading the web page** continues the same session: the page remembers the last session id in your browser.
+- **Reloading the web page** continues the same session: the page remembers the last session id in your browser. To go back to an older one, click **Your sessions** at the top right (next to what you have left): it lists your 10 latest sessions (`GET /sessions`: company, role, practice or interview, and where it stands, read from the `sessions` columns: brief, interview, or feedback ready), and a click opens one.
 - **Voyage problems**: a search that fails (no key, network, rate limit) is skipped with a warning in the logs: the question is asked without passages, the interview doesn't stop. Document embedding retries for about a minute on a rate limit (`429`), then reports `embedding_error`. A Voyage account **without a payment method is limited to 3 requests per minute**, which a fast interview can exceed; adding a payment method raises it (the first 200M tokens stay free).
 
 ---
@@ -498,7 +533,7 @@ Every paid call is priced and recorded, so the app can stop itself before it spe
 
 **Free replays.** The first time a question is spoken, its audio is saved in `question_audio` (per session, keyed by a hash of the voice settings, language and text). Replaying it, or reloading the page, reads it back instead of paying ElevenLabs again.
 
-**Seeing the spend.** `GET /usage` ([app/api/usage.py](app/api/usage.py)) returns your own spend this month and today, your interviews today and the limits the page needs; an admin also gets every budget with what's spent. The header shows "This month: $0.42", or for the admin "Budget: $3.10 / $10.00 this month" (hover for the details).
+**Seeing the spend.** `GET /usage` ([app/api/usage.py](app/api/usage.py)) returns what you have left, your interviews today and the limits the page needs; only an admin also gets their own spend (`month_usd`, `today_usd`) and every budget with what's spent. The header shows what's left to a user ("2 interviews left"), and "Budget: $3.10 / $10.00 this month" to the admin (hover for the details).
 
 ---
 
@@ -534,9 +569,11 @@ docker compose exec api pytest -q
 - that a spoken turn goes through speech-to-text, the graph and text-to-speech, and that silence or a provider error leaves the question in place;
 - that PDF, Word, .eml and text files are read, chunks stay small, uploads are chunked and found by search, and one interview never sees another's documents;
 - login by code ([tests/test_auth.py](tests/test_auth.py)): routes answer 401 without a login; a new email gets a code and typing it creates, verifies and logs in the account, an existing account logs in the same way; "send me a code" answers the same for every email (a disabled one gets no email); a code works once and only the latest counts, an expired code is refused, 5 wrong tries end a code, and a code only works for its email; the cookie is HttpOnly and SameSite=Lax, logout makes the old cookie useless, expired logins and disabled accounts are refused; only an HMAC of the code and a hash of the token are stored. Emails go to a fake mailbox (conftest `mailbox`), where the tests read the codes;
-- admin password and limits ([tests/test_admin.py](tests/test_admin.py)): an admin logs in with a password, or with a code as a fallback; a wrong password, a non-admin, an admin without a password, an unknown email and a disabled admin get the same 401; the 6th wrong password is blocked; only the Argon2 hash is stored, and set-password refuses non-admins and short passwords and ends other logins; an admin goes past the interviews-per-day and brief-revisions limits, but the budgets still stop them;
-- the practice and quotas ([tests/test_quotas.py](tests/test_quotas.py)): a new account's first session is a 3-question practice with Haiku feedback, and the next one reuses its documents and brief as a full interview with Sonnet feedback; after the practice and 2 interviews a new session is refused before any Claude call; "Request more" only once nothing is left, one at a time, emailing the admins; a grant adds interviews, closes the request and emails the person; a practice used elsewhere can't start twice; the practice budget stops practices, not interviews; admins have no quota. The shared test account has no practice and an endless interview quota, so the other tests run plain interviews;
+- Google login ([tests/test_google_login.py](tests/test_google_login.py), with a fake token check): no button and 404 without a client id; a new Google account signs up and logs in again into the same account; an existing account with the same email is linked, not duplicated; a forged token, an unverified email and a disabled account are refused;
+- admin password and limits ([tests/test_admin.py](tests/test_admin.py)): "Continue" asks an admin with a password for it (no code sent) and sends a code to everyone else; an admin logs in with a password, or with a code as a fallback; a wrong password, a non-admin, an admin without a password, an unknown email and a disabled admin get the same 401; the 6th wrong password is blocked; only the Argon2 hash is stored, and set-password refuses non-admins and short passwords and ends other logins; an admin goes past the interviews-per-day and brief-revisions limits, but the budgets still stop them;
+- the practice and quotas ([tests/test_quotas.py](tests/test_quotas.py)): a new account's first session is a 3-question practice with Haiku feedback, and the next one reuses its documents and brief as a full interview with Sonnet feedback; after the practice and 2 interviews a new session is refused before any Claude call; "Request more" only once nothing is left, one at a time, emailing the admins; a grant adds interviews, closes the request and emails the person; a practice used elsewhere can't start twice; the practice budget stops practices, not interviews; admins have no quota ([tests/test_sessions_list.py](tests/test_sessions_list.py): `GET /sessions` lists your sessions newest first with the right status, never another account's). The shared test account has no practice and an endless interview quota, so the other tests run plain interviews;
 - cost control ([tests/test_costs.py](tests/test_costs.py)): prices (four token kinds, Haiku's long-prompt prices, unknown models never free, speech and embeddings); every Claude response recorded, and calls inside graph nodes recorded for the right user and session; usage kept after an account is deleted; over the monthly budget a running interview still ends with feedback while a new one gets 503 (and the daily budget says "tomorrow"); interviews per day counted when questions are planned, not for briefs; brief revisions, questions, documents, characters, web pages and CV capped; big recordings refused before speech-to-text; replays not synthesized twice and long questions text-only; `GET /usage` showing the budgets only to an admin. The conftest fixture `generous_limits` empties `usage` and sets the budgets and the daily limit very high for every other test;
+- production pieces ([tests/test_production.py](tests/test_production.py)): `ENVIRONMENT=production` refuses to start without a long `SECRET_KEY`, secure cookies, a real email provider, Turnstile keys and a real database password, and local never refuses; Amazon SES (a fake client) gets a plain-text email from `MAIL_FROM`, and an SES failure answers 502; with Turnstile on (a fake check), `/auth/config` gives the site key and `/auth/start` sends a code only with a valid token;
 - hardening ([tests/test_hardening.py](tests/test_hardening.py)): the 6th wrong code is blocked even when right, and unblocked after the window; a successful login resets the count; one IP can't try codes on many emails, and nobody can flood an inbox (per email and per IP); requests from another site are refused while the app's page, the CLI and GETs pass; deleting an account needs its own emailed code (a login code doesn't work), then leaves no row of it (checkpoints and recordings included) and touches no one else's data. `auth_attempts` is emptied before each test (conftest `no_auth_attempts`), so limits never leak between tests;
 - that each user sees only their own data ([tests/test_ownership.py](tests/test_ownership.py)): every interview, document and session route answers 404 to another user (and changes nothing), nobody can attach a document to someone else's interview, and another user's CV never reaches your CV list, your brief or your search;
 - that the interviewer's prompt receives the matching passages and the transcript records their source;
@@ -588,9 +625,82 @@ The first evaluation covers **answer scoring + follow-ups** (the `evaluate_answe
 | after editing requirements.txt | `docker compose up -d --build` |
 | after editing .env | `docker compose up -d --force-recreate api` (the container reads .env when it is created) |
 
+### 13b. Production mode (Phase 5)
+
+On AWS the app runs from [docker-compose.prod.yml](docker-compose.prod.yml), which differs from the laptop setup in these ways:
+
+- **Caddy in front.** Only the `caddy` container is reachable from outside, on ports 80 and 443. It gets an HTTPS certificate from Let's Encrypt for `SITE_ADDRESS` (your domain) and renews it, redirects `http://` to `https://`, and passes each request to the api. HTTPS matters twice: codes and cookies travel encrypted, and browsers allow the microphone only on HTTPS pages (except localhost).
+- **The app from its image**: no source folder mounted, no `--reload`. On the server the image is pulled from GitHub's registry (GHCR); on your laptop `--build` builds it.
+- **Postgres stays private**: no port published, on an `internal` network that only the api joins, with its password from `POSTGRES_PASSWORD`.
+- **Settings checked at start.** `ENVIRONMENT=production` makes [app/config.py](app/config.py) (`check_production`, called by `lifespan` in main.py) refuse to start, with a list of what to fix, when `SECRET_KEY` is missing or short, `COOKIE_SECURE` is off, `MAIL_PROVIDER` is `console`, a Turnstile key is missing, or the database password is the local `app`. Better a clear error in the logs than a site where nobody can log in or cookies travel unencrypted.
+- **Email with Amazon SES** (`MAIL_PROVIDER=ses`): boto3 finds its credentials by itself. On the EC2 server they come from the server's **IAM role** (permissions attached to the machine), so no AWS key is stored anywhere. An email that can't be sent answers 502. SES costs about $0.10 per 1,000 emails, part of the AWS bill rather than the `usage` table.
+- **The visitor's IP** reaches the login limits through Caddy's `X-Forwarded-For`, trusted from Caddy's fixed address (172.30.0.10) only.
+- **Small-server sizes.** The server has 1 GB of memory, so each container has a cap (`mem_limit`: caddy 64 MB, api 512 MB, db 256 MB) and Postgres is tuned small (`shared_buffers=64MB`, `max_connections=40`, enough for the app's two pools). Measured on the laptop with `docker stats`: about 260 MB for all three at rest, 280 MB under a burst of 1,200 requests. Docker keeps at most 30 MB of logs per container, so the disk can't fill up.
+
+Try it on your laptop (it runs next to the dev Compose, with its own database). It needs a `.env` with the production settings: a `SECRET_KEY`, a `POSTGRES_PASSWORD`, `MAIL_PROVIDER=ses` and Cloudflare's test Turnstile keys from [.env.example](.env.example). Without AWS credentials on the laptop, "Continue" ends with "The email could not be sent", which shows SES was really called.
+
+| I want to... | Command |
+| --- | --- |
+| start production mode | `docker compose -f docker-compose.prod.yml up -d --build`, then `curl.exe -k https://localhost/health` (`-k`: the localhost certificate is Caddy's own, not trusted) |
+| see the memory each container uses | `docker stats` |
+| stop it (and delete its data) | `docker compose -f docker-compose.prod.yml down` (add `-v`) |
+
+### 13c. On AWS (Phase 5)
+
+The AWS setup is written in Terraform, in [infra/](infra/), so every piece can be read, reviewed and rebuilt with one command. It creates:
+
+- **A private network** (`network.tf`): a VPC (a network of our own inside AWS) with one public subnet whose traffic to the internet goes through an internet gateway, and a **security group** (the server's firewall) that lets in only ports 80 and 443. There is no SSH port: shells go through **Session Manager**, which works through the AWS API with your AWS login, so there is no key to lose and no port to attack.
+- **The server** (`server.tf`): one EC2 t4g.micro (ARM, 1 GB memory) on Amazon Linux 2023, with an encrypted 10 GB disk and an **Elastic IP** (a public address that stays the same when the server stops). "Standard" CPU credits mean a busy CPU slows down rather than adding to the bill. **IMDSv2** is required (the metadata service that hands out the role's credentials answers only requests with a session token), with a hop limit of 2 so the app's container can reach it for SES. A newer Amazon Linux image is never applied to the running server, since that would rebuild it and lose its data; the server installs its own security updates instead.
+- **Permissions** (`iam.tf`): the server's **IAM role** allows Session Manager and SSM Run Command (deploys, step 4), sending email with SES, and reading its own secrets. Nothing else.
+- **Weekly snapshots** (`server.tf`, Data Lifecycle Manager): a copy of the disk every Sunday, 4 kept, so a broken server or database can be rebuilt from at most a week ago.
+- **A budget** (`budget.tf`): an email at 80% of $10 spent, and when AWS forecasts the month will end above $10.
+
+**The first boot** ([user_data.sh.tftpl](infra/user_data.sh.tftpl)): AWS runs this script once. It installs Docker and the Compose plugin, turns on automatic security updates, adds a 2 GB swap file (disk used as spare memory), writes `/opt/interview` (the Compose file and Caddyfile from this repo, `settings.env` with the non-secret settings, and `deploy.sh`), then runs `deploy.sh`.
+
+**deploy.sh** ([infra/deploy.sh](infra/deploy.sh), copied to the server) builds `.env` from `settings.env` plus every secret stored under `/interview-prep/prod` in **SSM Parameter Store** (AWS's key-value store, encrypted), pulls the image from GitHub's registry, (re)starts the containers, reloads Caddy and waits until the api is healthy (else it prints the api's last logs and fails). Given a tag (`deploy.sh <commit id>`), it first switches `IMAGE_TAG` to that version. Run it again after changing a secret. Its log is `/var/log/interview-deploy.log`.
+
+**Secrets never touch Terraform.** If Terraform created them, their values would sit in its state file. Instead, [set-secrets.ps1](infra/set-secrets.ps1) stores them with the AWS CLI: it generates `SECRET_KEY` and `POSTGRES_PASSWORD` itself (the database password is never replaced, because the database was created with it) and asks you for each API key, typed hidden.
+
+**Your AWS login** has no long-lived key. The CLI and Terraform use **IAM Identity Center** (AWS's single sign-on, set up in Paris, `eu-west-3`; it gives access to every region): `aws sso login` opens the browser, you sign in with MFA, and the `default` profile gets credentials of the `AdministratorAccess` permission set that expire after 4 hours. A stolen laptop or a leaked file therefore gives access for a few hours at most, and only after an MFA sign-in. The one-time setup is `aws configure sso` (start URL from the Identity Center dashboard, SSO region `eu-west-3`, client region `eu-west-1`, profile `default`).
+
+**Terraform's state** (the list of what it created) is kept in an S3 bucket made once by [infra/bootstrap](infra/bootstrap/main.tf): private, encrypted, versioned, and locked while Terraform runs.
+
+| I want to... | Command (PowerShell, from the folder named) |
+| --- | --- |
+| log in to AWS (each working session; the login lasts 4 hours) | `aws sso login` (a browser sign-in with MFA, through IAM Identity Center) |
+| create the state bucket (once) | `infra/bootstrap`: `terraform init`, then `terraform apply` |
+| connect infra/ to it (once) | `infra`: `terraform init -backend-config=backend.hcl` |
+| set my alert email (once) | copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` and edit it |
+| store the secrets | `infra`: `./set-secrets.ps1` (one value: `./set-secrets.ps1 NAME`; what is set: `-List`) |
+| see what would change (free) | `infra`: `terraform plan` |
+| create or update the AWS resources | `infra`: `terraform apply` (shows the plan, then asks "yes") |
+| check the app | `curl.exe http://<public_ip>/health` (`terraform output public_ip`) |
+| open a shell on the server | `terraform output shell` gives the command (needs the AWS CLI's Session Manager plugin) |
+| redeploy after changing a secret | in that shell: `sudo /opt/interview/deploy.sh`, then `sudo tail /var/log/interview-deploy.log` |
+| stop paying for the server while not using it | `aws ec2 stop-instances --instance-ids <instance_id>` (`start-instances` to resume; the disk and IP are still billed, about $5 a month) |
+| remove everything (except the state bucket) | `infra`: `terraform destroy` (the database goes with the server; the snapshots stay until deleted) |
+
+### 13d. Deploys from GitHub Actions (Phase 5)
+
+Every push to `main` deploys itself, with [.github/workflows/deploy.yml](.github/workflows/deploy.yml). **GitHub Actions** runs it on GitHub's machines (runners), in two jobs:
+
+1. **build** (on an ARM runner, because the server is ARM): builds the image, runs the whole test suite inside it against a Postgres + pgvector container, and only if every test passes pushes it to GHCR, tagged with the commit id and as `latest`. A failing test means nothing is published or deployed.
+2. **deploy**: logs in to AWS with **OIDC** and asks the server, through **SSM Run Command** (running a command on a server through the AWS API, no SSH), to download `docker-compose.prod.yml`, the Caddyfile and `infra/deploy.sh` at this commit, then run `deploy.sh <commit id>`. It prints the server's output and finally checks `/health` from the internet.
+
+**OIDC, or why GitHub holds no AWS key** ([infra/github.tf](infra/github.tf)): for each run, GitHub signs a short token saying which repository and branch is running. AWS trusts GitHub's signature (the OIDC provider) and trades a token from *this repository's main branch only* for one hour of the `interview-prep-github-deploy` role, which can do one thing: run a command on this server and read its result. A fork, another branch or another repository gets nothing, and there is no key to leak.
+
+**Setup, once:** after `terraform apply`, three repository variables (Settings > Secrets and variables > Actions > Variables; not secrets, nothing in them is sensitive): `AWS_DEPLOY_ROLE_ARN` and `AWS_INSTANCE_ID` (from `terraform output`), and `SITE_URL` (`http://<public_ip>` until the domain exists). After the first image is pushed, make the GHCR package public (on GitHub: your profile > Packages > the package > Package settings > Change visibility), so the server can pull it without a login. The code is public anyway.
+
+| I want to... | How |
+| --- | --- |
+| deploy | push (or merge) to `main` |
+| deploy again without a change | GitHub > Actions > Deploy > Run workflow |
+| see a deploy | GitHub > Actions > the run (the server's output is in the "Deploy on the server" step) |
+| roll back | GitHub > Actions > the last good run > Re-run all jobs (it redeploys that commit's image), or in a server shell `sudo /opt/interview/deploy.sh <good commit id>` |
+
 **LangGraph Studio** (optional, not tested yet) shows the graph visually and lets you run steps one by one. [langgraph.json](langgraph.json) tells it where the graph is (`app/graph/build.py:graph`) and to load `.env`. To use it, install the CLI on your machine (`pip install "langgraph-cli[inmem]"`), then run `langgraph dev` in the project folder.
 
-**What did it cost?** The header shows the month's spend. For details, in a database shell: `SELECT provider, model, round(sum(cost_usd), 4) FROM usage WHERE created_at >= date_trunc('month', now()) GROUP BY 1, 2;` Compare with each provider's dashboard now and then: they should agree within about 20%.
+**What did it cost?** The admin's header shows the month's spend. For details, in a database shell: `SELECT provider, model, round(sum(cost_usd), 4) FROM usage WHERE created_at >= date_trunc('month', now()) GROUP BY 1, 2;` Compare with each provider's dashboard now and then: they should agree within about 20%.
 
 Postgres is on port **5433** on your machine, not the usual 5432. The database name, user and password are `interview` / `app` / `app`, for local use only.
 
@@ -665,6 +775,12 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **429 / Too Many Requests**: the HTTP answer meaning "slow down, try again later".
 - **Middleware**: code that runs around every request, before and after the route.
 - **ON DELETE CASCADE**: a rule on a foreign key: when the row it points to is deleted, the database deletes this row too.
+- **OIDC (OpenID Connect)**: a standard for signed identity tokens; here GitHub signs "this run is repository X, branch main", and AWS trusts that signature instead of a stored key.
+- **SSM Run Command**: runs a shell command on a server through the AWS API (no SSH, no open port), with its output kept for reading.
+- **Terraform state**: Terraform's record of the resources it created and their ids, so the next run knows what exists; kept in S3.
+- **Security group**: AWS's firewall around a server: which ports may be reached, from where.
+- **IAM role**: a set of AWS permissions given to a machine or a service instead of a person; programs on that machine get short-lived credentials from it, so no keys are stored.
+- **Reverse proxy**: a server that receives the requests from the internet and passes them on to the app behind it (here Caddy, which also handles HTTPS).
 - **Interrupt**: a pause inside a graph step that waits for a human. It is resumed with `Command(resume=...)`.
 - **Migration**: a numbered script that changes the database's tables in a controlled way.
 - **Node**: one step of the graph, written as a Python function.
@@ -694,7 +810,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4.6. Accounts: email, password and an invite code; each user sees only their own data | built and tested: login, logout, login screen, CLI login; each user sees only their own data; invite codes and registration; guessing limits, Origin check, change password, delete my account, admin script, privacy note. The final check (inviting a real person) is yours to run |
 | 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 4.8. Admin login with a password; no per-user limits for admins | built and tested: set-password / clear-password, "Admin? Log in with a password", CLI with INTERVIEW_PASSWORD; admins skip the daily and revision limits, budgets and size limits still apply. Setting your own password and the check are yours to do |
-| 5. AWS with Terraform | planned |
+| 4.9. Login and header polish: one email field that asks admins for their password, Continue with Google, the Practiss logo, what's left in the header, instant return to a brief | built and tested: admin detection on "Continue", `POST /auth/google` (migration 0013), the logo (top left, back to a new interview) and app icon, the header shows users what's left and no money, a draft brief is reused with no Claude call. Creating the Google OAuth client id and the check in a browser are yours to do |
+| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) applied: the server runs and answers Session Manager; your AWS login is IAM Identity Center with MFA. Step 4 (deploys from GitHub Actions with OIDC) written: tests in the ARM image, push to GHCR, deploy through SSM Run Command |
 | 6. Streaming, live turn detection, personas and more | planned |
 
 The details of each phase are in [plan.md](plan.md).

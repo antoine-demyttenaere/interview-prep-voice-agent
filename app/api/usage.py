@@ -1,13 +1,14 @@
 """GET /usage: what you have spent and have left; POST /access-requests: "Request more".
 
-The web page (web/app.js) calls GET /usage after logging in and after each session, to show the
-month's spend and what is left in the header, to know the recording limit, and to show the
+The web page (web/app.js) calls GET /usage after logging in and after each session, to show in
+the header what is left (an admin sees the month's budget instead), to know the recording limit, and to show the
 "Request more" box once nothing is left. The numbers come from app/costs/budget.py.
 
 GET /usage returns
-- you:     your spend this month and today (US dollars), your sessions today out of the daily
-           limit, your practice and interviews left (None for an admin: no quota), what your next
-           session will be (practice or interview), and since when a request of yours is pending
+- you:     your sessions today out of the daily limit, your practice and interviews left (None
+           for an admin: no quota), what your next session will be (practice or interview), and
+           since when a request of yours is pending. Only an admin also gets month_usd and
+           today_usd (their own spend): money is the operator's business, not the users'.
 - limits:  the per-session limits the page needs (recording length, spoken question length, questions)
 - budget:  only for an admin account: every budget (month, today, each provider, practices) with
            what is spent, the ratio, "warning" at 80% and which are used up. Other users don't see
@@ -38,8 +39,11 @@ router = APIRouter(tags=["usage"])
 @router.get("/usage")
 def get_usage(db: DB = Depends(get_db), user: User = Depends(current_user)) -> dict:
     s = get_settings()
+    you = budget.user_status(db, user)
+    if not user.is_admin:
+        you.pop("month_usd"), you.pop("today_usd")
     return {
-        "you": budget.user_status(db, user),
+        "you": you,
         "limits": {
             "max_recording_seconds": s.max_recording_seconds,
             "max_spoken_chars": s.max_spoken_chars,

@@ -27,19 +27,32 @@ How it works:
   your documents the interviewer drew on.
 - "End interview and get feedback" calls POST /sessions/{id}/end; "New interview" (top right)
   goes back to the setup form, and the session it leaves stays saved.
-- The brief is a carousel: six numbered cards you scroll from left to right (carousel()).
+- The brief is a carousel: six cards you scroll from left to right (carousel()), each with a
+  line icon from ICONS in a rounded square; bars under it show the current card and those seen.
+- The conversation shows each message as an avatar (the app icon for the interviewer, your
+  initial for you) next to a bubble (line()).
 - The feedback shows the score, a carousel (in short, fix first, keep doing) and details you
   click open: each rubric criterion (score bar -> why, and how to improve) and each question
   (score -> comment, a stronger answer, and your own answer from the transcript).
 - The interviewer's audio for the first question, and for replays, comes from POST /speak.
 - The last session id is remembered in this browser (localStorage) so a reload continues it.
-- Spend (header): GET /usage after logging in and after each interview: "This month: $0.42"
-  and what's left for you; an admin sees the month's budget instead, in a warning color from 80%.
+- Header: GET /usage after logging in and after each interview: what's left for you ("Practice
+  + 2 interviews left"; no money is shown to users); an admin sees the month's budget instead,
+  in a warning color from 80%. The logo (top left) starts a new interview, like "New interview".
+- Login: one email field. "Continue" (POST /auth/start) answers "code" (the code screen) or,
+  for an admin with a password, "password" (the password screen; "Send me a code instead" asks
+  again with use_code). "Continue with Google" is Google's own button (Google Identity Services,
+  loaded from accounts.google.com only when GET /auth/config has a client id); Google hands
+  back an ID token, which POST /auth/google checks. On AWS, Cloudflare Turnstile (loaded from
+  challenges.cloudflare.com only when GET /auth/config has a site key) checks you're a person
+  before "Continue" sends a code: its token goes with POST /auth/start.
 - Practice and quotas (Phase 4.7): a new account's first session is a short practice (3
   questions); the header says "Practice" during it. Once the practice and interviews are used, the
   setup page offers "Request more" (POST /access-requests); a 429 when starting refreshes it.
-- "Your account" (bottom of the setup page): delete the account and all its data: "Email me a
-  code" (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
+- Header menus (top right, closed by a click outside or Escape): "Your sessions" lists your 10
+  latest sessions (GET /sessions; a click opens one where it stands, GET /sessions/{id}); your
+  initial opens the account menu: your email, "Delete my account…" and Log out. "Delete my account…" opens a dialog: "Email me a code"
+  (POST /auth/delete-code), then the code (DELETE /auth/me), after a confirm.
 */
 
 const $ = (id) => document.getElementById(id);
@@ -66,9 +79,13 @@ function recall(key) {
   try { return localStorage.getItem(key); } catch (_) { return null; }
 }
 
+// Errors show at the top of the page, and also inside the "Delete my account" dialog while it is
+// open (a modal dialog covers the page, so the top message would be hidden behind it).
 function showError(message) {
-  $("error").textContent = message;
-  $("error").hidden = !message;
+  for (const box of [$("error"), $("dialog-error")]) {
+    box.textContent = message;
+    box.hidden = !message;
+  }
 }
 
 function busy(text) {
@@ -113,7 +130,7 @@ async function api(method, path, body, isForm = false) {
   const res = await fetch(path, options);
   // 401 = not logged in (any more): show the login screen. A wrong code on the login form is
   // also a 401, but that one is shown as a normal error.
-  if (res.status === 401 && path !== "/auth/verify" && path !== "/auth/password-login") {
+  if (res.status === 401 && !["/auth/verify", "/auth/password-login", "/auth/google"].includes(path)) {
     showLogin(path === "/auth/me" ? "" : "Your login has ended: please log in again.");
     const err = new Error("Please log in.");
     err.status = 401;
@@ -196,13 +213,35 @@ function render(view) {
   renderInterview(view);
 }
 
+// A small line icon (24x24, drawn with SVG paths in the current text color), for card titles.
+function icon(paths) {
+  const span = el("span", { class: "slide-icon", "aria-hidden": "true" });
+  span.innerHTML = `<svg viewBox="0 0 24 24">${paths}</svg>`; // our own fixed markup, never user text
+  return span;
+}
+const ICONS = {
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  building: '<path d="M4 21V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v16M15 9h4a1 1 0 0 1 1 1v11M3 21h18M8 8h3M8 12h3M8 16h3"/>',
+  people: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
+  checklist: '<path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/>',
+  gap: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5v.01"/>',
+  question: '<path d="M4 5h16v11H9l-5 4z"/><path d="M10 9a2 2 0 1 1 2.5 1.9c-.4.2-.5.5-.5.9v.4M12 14.5v.01"/>',
+  quote: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/>',
+  star: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>',
+};
+
 // --- carousel: a row of cards you scroll (or swipe) from left to right ---
-// cards: [{title, cls, content: [nodes]}]. Arrows move one card; dots show where you are.
+// cards: [{title, cls, icon, content: [nodes]}]. A card with an icon (ICONS) shows it in a rounded
+// square before its title; one without shows its number. Arrows move one card; the bars under
+// the cards show where you are (the current one long, those already seen in a lighter indigo).
+
+const CHEVRON = { prev: '<path d="M15 5l-7 7 7 7"/>', next: '<path d="M9 5l7 7-7 7"/>' };
 
 function carousel(cards, onChange) {
   const track = el("div", { class: "carousel-track" },
     cards.map((c, i) => el("article", { class: `slide ${c.cls || ""}` },
-      el("h3", {}, el("span", { class: "slide-no" }, i + 1), c.title), ...c.content)));
+      el("h3", {}, c.icon ? icon(ICONS[c.icon]) : el("span", { class: "slide-no" }, i + 1), c.title),
+      ...c.content)));
   const dots = el("div", { class: "carousel-dots" }, cards.map(() => el("span")));
   const slides = [...track.children];
   let current = 0;
@@ -213,8 +252,11 @@ function carousel(cards, onChange) {
     track.scrollTo({ left: s.offsetLeft + s.offsetWidth / 2 - track.clientWidth / 2, behavior: "smooth" });
   };
   const step = (dir) => goTo(current + dir);
-  const prev = el("button", { type: "button", class: "btn arrow", "aria-label": "Previous card" }, "‹");
-  const next = el("button", { type: "button", class: "btn arrow", "aria-label": "Next card" }, "›");
+  const prev = el("button", { type: "button", class: "btn arrow", "aria-label": "Previous card" });
+  const next = el("button", { type: "button", class: "btn arrow", "aria-label": "Next card" });
+  prev.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${CHEVRON.prev}</svg>`;
+  next.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${CHEVRON.next}</svg>`;
+  let seen = 0; // the furthest card reached, for the bars
   prev.onclick = () => step(-1);
   next.onclick = () => step(1);
   slides.forEach((s, i) => s.addEventListener("click", () => { if (i !== current) goTo(i); }));
@@ -226,7 +268,11 @@ function carousel(cards, onChange) {
       Math.abs(s.offsetLeft + s.offsetWidth / 2 - middle) <
       Math.abs(slides[best].offsetLeft + slides[best].offsetWidth / 2 - middle) ? i : best, 0);
     slides.forEach((s, i) => s.classList.toggle("current", i === current));
-    [...dots.children].forEach((d, i) => d.classList.toggle("on", i === current));
+    seen = Math.max(seen, current);
+    [...dots.children].forEach((d, i) => {
+      d.classList.toggle("on", i === current);
+      d.classList.toggle("seen", i <= seen && i !== current);
+    });
     prev.classList.toggle("off", current === 0);
     next.classList.toggle("off", current === slides.length - 1);
     if (onChange) onChange(current, slides.length);
@@ -264,12 +310,12 @@ function renderBrief(b) {
   setApprove(false, 5);
   const people = b.interviewers.map((i) => `${i.name}, ${i.role}${i.notes ? ` (${i.notes})` : ""}`);
   $("brief").replaceChildren(carousel([
-    { title: "Focus on", cls: "accent", content: [list(b.focus_areas)] },
-    { title: "The company", content: [el("p", {}, b.company_summary)] },
-    { title: "The interview", content: [el("p", {}, b.interview_format), people.length ? list(people) : ""] },
-    { title: "The role needs", content: [list(b.role_requirements)] },
-    { title: "Your gaps", cls: "warn", content: [list(b.cv_gaps)] },
-    { title: "Likely questions", content: [list(b.probable_questions, true)] },
+    { title: "Focus on", cls: "accent", icon: "target", content: [list(b.focus_areas)] },
+    { title: "The company", icon: "building", content: [el("p", {}, b.company_summary)] },
+    { title: "The interview", icon: "people", content: [el("p", {}, b.interview_format), people.length ? list(people) : ""] },
+    { title: "The role needs", icon: "checklist", content: [list(b.role_requirements)] },
+    { title: "Your gaps", cls: "warn", icon: "gap", content: [list(b.cv_gaps)] },
+    { title: "Likely questions", icon: "question", content: [list(b.probable_questions, true)] },
   ], (current, total) => {
     if (current === total - 1) seenLast = true;
     setApprove(seenLast, total - 1 - current);
@@ -277,6 +323,16 @@ function renderBrief(b) {
 }
 
 // --- interview: the transcript grouped by question ---
+
+// One message of the conversation: an avatar (the app icon for the interviewer, your initial for
+// you) next to a bubble holding `children`. attrs go on the whole line (class, id).
+function line(role, attrs, ...children) {
+  const avatar = role === "interviewer"
+    ? el("img", { class: "line-avatar", src: "brand/app-icon.png", alt: "" })
+    : el("span", { class: "line-avatar you", "aria-hidden": "true" }, $("avatar").textContent || "?");
+  return el("div", { ...attrs, class: `line ${role} ${attrs.class || ""}` },
+    avatar, el("div", { class: "bubble" }, ...children));
+}
 
 function renderTranscript(turns) {
   const nodes = [];
@@ -291,7 +347,7 @@ function renderTranscript(turns) {
           el("summary", {}, `Based on ${t.sources.length} document${t.sources.length > 1 ? "s" : ""}`),
           list(t.sources))
       : "";
-    nodes.push(el("div", { class: `line ${t.role}` },
+    nodes.push(line(t.role, {},
       el("span", { class: "who" }, t.role === "interviewer" ? "Interviewer" : "You",
         t.followup && t.role === "interviewer" ? el("span", { class: "tag" }, "follow-up") : ""),
       el("p", {}, t.text),
@@ -307,7 +363,7 @@ function renderTranscript(turns) {
 // "interviewer" while the next question is being prepared. render() replaces it.
 function showPending(role) {
   hidePending();
-  const bubble = el("div", { class: `line ${role} pending`, id: "pending-bubble" },
+  const bubble = line(role, { class: "pending", id: "pending-bubble" },
     el("span", { class: "who" }, role === "interviewer" ? "Interviewer" : "You"),
     el("span", { class: "dots", "aria-label": role === "interviewer" ? "The interviewer is thinking" : "Recording" },
       el("i"), el("i"), el("i")));
@@ -382,18 +438,24 @@ function renderFeedback(view) {
   const answered = new Set((view.transcript || []).filter((t) => t.role === "candidate").map((t) => t.q_index)).size;
 
   // Top: the score, then the three key messages as cards you swipe through.
+  // The score ring: an SVG circle whose colored arc covers score / 5 of the way round.
+  const ring = el("div", { class: `score-big ${level(fb.overall_score)}` });
+  const arc = (2 * Math.PI * 36 * fb.overall_score) / 5;
+  ring.innerHTML = `<svg viewBox="0 0 84 84" aria-hidden="true"><circle class="track" cx="42" cy="42" r="36"/>`
+    + `<circle class="arc" cx="42" cy="42" r="36" stroke-dasharray="${arc} 999"/></svg>`;
+  ring.append(el("span", {}, fb.overall_score, el("small", {}, "/ 5")));
   const overview = el("div", { class: "panel overview" },
     el("div", { class: "score-head" },
-      el("div", { class: `score-big ${level(fb.overall_score)}` }, el("span", {}, fb.overall_score, el("small", {}, "/ 5"))),
+      ring,
       el("div", {},
         el("h2", {}, "Your feedback"),
         view.ended_early
           ? el("span", { class: "badge" }, `Ended early: ${answered} of ${view.total_questions} questions`)
           : el("span", { class: "muted small" }, `${view.total_questions} questions`))),
     carousel([
-      { title: "In short", content: [el("p", {}, fb.summary)] },
-      { title: "Fix first", cls: "accent", content: [list(fb.fixes, true)] },
-      { title: "Keep doing", cls: "good", content: [list(fb.strengths)] },
+      { title: "In short", icon: "quote", content: [el("p", {}, fb.summary)] },
+      { title: "Fix first", cls: "accent", icon: "target", content: [list(fb.fixes, true)] },
+      { title: "Keep doing", cls: "good", icon: "star", content: [list(fb.strengths)] },
     ]),
   );
 
@@ -420,10 +482,12 @@ function renderFeedback(view) {
 
   $("feedback").replaceChildren(
     overview,
-    el("div", { class: "panel details" },
-      el("h2", {}, "Rubric"), el("p", { class: "hint muted small" }, "Click a criterion to see why, and how to improve it."), ...rubric,
-      el("h2", {}, "Question by question"), el("p", { class: "hint muted small" }, "Click a question to see the comment and your answer."),
-      ...questions),
+    el("div", { class: "details" },
+      el("section", { class: "panel" },
+        el("h2", {}, "Rubric"), el("p", { class: "hint muted small" }, "Click a criterion to see why, and how to improve it."), ...rubric),
+      el("section", { class: "panel" },
+        el("h2", {}, "Question by question"), el("p", { class: "hint muted small" }, "Click a question to see the comment and your answer."),
+        ...questions)),
   );
 }
 
@@ -465,11 +529,20 @@ async function loadStoredCv() {
           updateSubmitLabel();
         });
       };
-      return el("div", { class: "stored" },
-        el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · ${d.chunks} chunks`)), del);
+      return storedRow(d.source, `${d.chunks} chunks`, del);
     }));
   }
   updateReplaceRow();
+}
+
+// One stored document: a tile with its file type (PDF, DOCX...), its name, a short note, and a
+// Delete button. Used for your CV and for the company documents already added.
+function storedRow(name, note, button) {
+  const ext = (/\.(\w{2,4})$/.exec(name) || [, "txt"])[1].toUpperCase();
+  return el("div", { class: "stored" },
+    el("span", { class: "file-tile", "aria-hidden": "true" }, ext),
+    el("span", { class: "stored-name" }, el("strong", {}, name), el("span", { class: "muted small" }, note)),
+    button);
 }
 
 function updateReplaceRow() {
@@ -478,10 +551,19 @@ function updateReplaceRow() {
   $("replace-cv-row").hidden = !(hasNew && state.storedCv.length);
 }
 
-$("cv-file-input").addEventListener("change", updateReplaceRow);
+$("cv-file-input").addEventListener("change", (e) => {
+  $("cv-chips").replaceChildren(...[...e.target.files].map((file) => el("li", {}, file.name)));
+  updateReplaceRow();
+});
 $("setup-form").elements.cv.addEventListener("input", updateReplaceRow);
 $("files-input").addEventListener("change", (e) => {
   $("file-chips").replaceChildren(...[...e.target.files].map((file) => el("li", {}, file.name)));
+});
+// Drop zones: highlighted while a file is dragged over them (the file input inside takes the drop).
+document.querySelectorAll(".dropzone input").forEach((input) => {
+  const zone = input.parentElement;
+  input.addEventListener("dragenter", () => zone.classList.add("over"));
+  ["dragleave", "drop"].forEach((t) => input.addEventListener(t, () => zone.classList.remove("over")));
 });
 
 // ---------- setup: the 3-step form (left to right) ----------
@@ -548,6 +630,14 @@ function nextStep() {
   goStep(wizard.step + 1);
 }
 
+// The − and + buttons next to "Questions": one less or one more, within the field's min and max.
+// The "input" event lets the draft save it, as if you had typed the number.
+document.querySelectorAll(".step-btn").forEach((b) => b.addEventListener("click", () => {
+  const input = b.parentElement.querySelector("input");
+  if (Number(b.dataset.delta) > 0) input.stepUp(); else input.stepDown();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}));
+
 $("wizard-next").addEventListener("click", nextStep);
 $("wizard-back").addEventListener("click", () => goStep(wizard.step - 1));
 [...$("wizard-steps").children].forEach((li, i) =>
@@ -570,7 +660,7 @@ window.addEventListener("resize", fitTrack);
 
 // Enter in a one-line field = Next (or "Write my brief" on the last step); Enter in a text area adds a line.
 $("setup-form").addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.id === "resume-id") return;
+  if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
   e.preventDefault();
   if (wizard.step < wizard.count - 1) nextStep();
   else $("setup-form").requestSubmit($("wizard-submit"));
@@ -598,6 +688,20 @@ $("setup-form").addEventListener("submit", (e) => {
     const { sessionId } = state.editing;
     return run("Back to your brief...", async () => {
       const view = await api("GET", `/sessions/${sessionId}`);
+      state.editing = null;
+      clearDraft();
+      render(view);
+    });
+  }
+  // Only the number of questions or the length changed: the brief doesn't depend on them, so
+  // a new session starts at the same brief at once (no call to Claude).
+  if (state.editing && !editingChanged(["questions", "duration"])) {
+    const { interviewId } = state.editing;
+    return run("Back to your brief...", async () => {
+      const view = await api("POST", `/interviews/${interviewId}/sessions`, {
+        num_questions: Number(f.get("questions")) || null, duration_min: Number(f.get("duration")) || null,
+        review_brief: true,
+      });
       state.editing = null;
       clearDraft();
       render(view);
@@ -655,7 +759,7 @@ $("setup-form").addEventListener("submit", (e) => {
         failed.push(err.message);
       }
     }
-    if (links.length) { $("setup-form").elements.links.value = ""; $("setup-form").elements.job_link.value = ""; }
+    clearSentInputs();
 
     const questions = Number(f.get("questions")) || null;
     const view = await api("POST", `/interviews/${interview.id}/sessions`,
@@ -667,15 +771,10 @@ $("setup-form").addEventListener("submit", (e) => {
   });
 });
 
-function resumeById() {
-  const id = $("resume-id").value.trim();
-  if (!id) return showError("Paste a session id first.");
+// Open one of your sessions (from the account menu's list) where it stands.
+function openSession(id) {
   run("Loading the session...", async () => render(await api("GET", `/sessions/${id}`)));
 }
-$("resume").addEventListener("click", resumeById);
-$("resume-id").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); resumeById(); } // don't submit the setup form
-});
 
 // ---------- brief review ----------
 
@@ -719,7 +818,7 @@ async function startRecording() {
     state.recordStart = Date.now();
     state.autoStop = setTimeout(stopRecording, maxRecordingMs);
     $("talk").classList.add("recording");
-    $("talk").textContent = "Stop and send";
+    $("talk-label").textContent = "Stop and send";
     showPending("candidate");
     // "1:23 / 5:00" under the button; coral blinking in the last 30 seconds
     const limit = maxRecordingMs / 1000;
@@ -748,7 +847,7 @@ function stopRecording() {
   $("rec-timer").hidden = true;
   hidePending();
   $("talk").classList.remove("recording");
-  $("talk").textContent = "Start answering";
+  $("talk-label").textContent = "Start answering";
 
   recorder.addEventListener("stop", () => {
     if (Date.now() - state.recordStart < 400) return showError("That was too short. Start, give your answer, then stop.");
@@ -824,7 +923,7 @@ $("end-interview").addEventListener("click", () => {
     state.recorder.stop();
     state.recorder = null;
     $("talk").classList.remove("recording");
-    $("talk").textContent = "Start answering";
+    $("talk-label").textContent = "Start answering";
   }
   run("Writing your feedback (about 30 s)...", async () =>
     render(await api("POST", `/sessions/${state.sessionId}/end`)));
@@ -849,12 +948,14 @@ function clearDraft() { remember("setupDraft", null); }
 
 // After going back from a brief: has anything the brief depends on changed since?
 // Nothing changed -> "Back to my brief" keeps the same brief instead of writing a new one.
-function editingChanged() {
+// `ignore` leaves fields out of the check (questions and duration don't change the brief itself).
+function editingChanged(ignore = []) {
   const ed = state.editing;
   if (!ed) return true;
   const f = $("setup-form").elements;
   if (ed.changed) return true; // a document or CV was removed
-  if (["company", "role", "mode", "language", "questions", "duration"].some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
+  const fields = ["company", "role", "mode", "language", "questions", "duration"].filter((n) => !ignore.includes(n));
+  if (fields.some((n) => String(f[n].value).trim() !== String(ed.original[n]).trim())) return true;
   for (const docType of ["job_post", "notes"]) {
     if (f[docType].value.trim() !== ((ed.pasted[docType] && ed.pasted[docType].text) || "").trim()) return true;
   }
@@ -864,9 +965,9 @@ function editingChanged() {
 }
 
 function updateSubmitLabel() {
-  $("wizard-submit").textContent = state.editing && !editingChanged()
-    ? (state.editing.returnTo === "interview" ? "Back to my interview ›" : "Back to my brief ›")
-    : "Prepare my interview brief ›";
+  $("wizard-submit").textContent = !state.editing || editingChanged(["questions", "duration"])
+    ? "Prepare my interview brief ›"
+    : !editingChanged() && state.editing.returnTo === "interview" ? "Back to my interview ›" : "Back to my brief ›";
 }
 
 $("setup-form").addEventListener("input", (e) => { if (e.target.type !== "file") saveDraft(); updateSubmitLabel(); });
@@ -887,8 +988,7 @@ function renderExistingDocs(docs) {
         updateSubmitLabel();
       });
     };
-    return el("div", { class: "stored" },
-      el("span", {}, el("strong", {}, d.source), el("span", { class: "muted small" }, ` · already added · ${d.chunks} chunks`)), del);
+    return storedRow(d.source, `Already added · ${d.chunks} chunks`, del);
   }));
 }
 
@@ -903,6 +1003,20 @@ function showSetup(step) {
   loadStoredCv();
 }
 
+// Files chosen and a pasted CV are sent once: after that they are stored documents (listed as
+// "already added"), so the form forgets them. Otherwise, going back from the brief would see
+// them as new and write the brief again (and add them twice).
+function clearSentInputs() {
+  const f = $("setup-form").elements;
+  $("files-input").value = "";
+  $("cv-file-input").value = "";
+  $("file-chips").replaceChildren();
+  $("cv-chips").replaceChildren();
+  f.cv.value = "";
+  f.links.value = "";
+  f.job_link.value = "";
+}
+
 // A brand-new interview: empty form, no session.
 function goToSetup() {
   remember("sessionId", null);
@@ -913,6 +1027,7 @@ function goToSetup() {
   $("leave").hidden = true;
   $("setup-form").reset();
   $("file-chips").replaceChildren();
+  $("cv-chips").replaceChildren();
   renderExistingDocs([]);
   clearDraft();
   showSetup(0);
@@ -943,6 +1058,7 @@ function editSetup(view, returnTo) {
         f[d.doc_type].value = d.text || "";
       }
     }
+    clearSentInputs(); // in case anything was left from before (e.g. a reload)
     renderExistingDocs(iv.documents.filter((d) => !pasted[d.doc_type] || pasted[d.doc_type].id !== d.id));
     state.editing = {
       interviewId: iv.id, sessionId: view.session_id, returnTo, pasted, changed: false,
@@ -983,13 +1099,17 @@ $("back-to-brief").addEventListener("click", () => {
   run("Loading the brief...", async () => render(await api("GET", `/sessions/${sessionId}`)));
 });
 
-// Leave the current interview for a new one. An unfinished one stays saved under its id.
-$("leave").addEventListener("click", () => {
+// Leave the current interview for a new one ("New interview", or a click on the logo). An
+// unfinished one stays saved under its id. Logged out, the logo just stays on the login screen.
+function leaveForNewInterview() {
+  if (!$("panel-login").hidden) return;
   const unfinished = state.view && state.view.status !== "done";
   if (unfinished && !confirm(
     `Leave this interview? It stays saved: continue it later with the session id\n${state.sessionId}`)) return;
   goToSetup();
-});
+}
+$("leave").addEventListener("click", leaveForNewInterview);
+$("home").addEventListener("click", (e) => { e.preventDefault(); leaveForNewInterview(); });
 
 // Light / dark: the button shows the theme you would switch to. Until you click it, the page
 // follows the system setting; your choice is then remembered in this browser.
@@ -1007,6 +1127,7 @@ $("theme").addEventListener("click", () => {
   document.documentElement.dataset.theme = next;
   remember("theme", next);
   updateThemeButton();
+  if (!$("panel-login").hidden && !$("login-form").hidden) showGoogleButton(); // redraw in the new colors
 });
 updateThemeButton();
 
@@ -1015,13 +1136,81 @@ $("voice-toggle").checked = state.voiceOn;
 
 // ---------- login ----------
 
-// Header: your email and "Log out" when logged in (user = {email, is_admin}), nothing otherwise.
+// Header: "Your sessions" and your initial (the buttons that open the two menus) when logged in
+// (user = {email, is_admin}), nothing otherwise. Your email shows only inside the account menu.
 function setAccount(user) {
-  $("account").textContent = user ? user.email : "";
-  $("account").hidden = !user;
-  $("logout").hidden = !user;
-  if (!user) $("spend").hidden = true;
+  const email = user ? user.email : "";
+  $("menu-email").textContent = email;
+  $("avatar").textContent = email.charAt(0);
+  $("menu-avatar").textContent = email.charAt(0);
+  $("account-button").title = email;
+  $("account-button").hidden = !user;
+  $("sessions-button").hidden = !user;
+  if (!user) { $("spend").hidden = true; closeMenus(); }
 }
+
+// ---------- header menus: your sessions; your account (delete my account, log out) ----------
+
+const STATUS = { brief: "Brief", interview: "Interview", done: "Feedback ready" };
+// Each menu and the button that opens it. Only one is open at a time.
+const MENUS = { "sessions-menu": "sessions-button", "account-menu": "account-button" };
+
+function openMenu(id) {
+  closeMenus();
+  $(id).hidden = false;
+  $(MENUS[id]).setAttribute("aria-expanded", "true");
+  if (id === "sessions-menu") loadSessionList();
+}
+function closeMenus() {
+  for (const [menu, button] of Object.entries(MENUS)) {
+    $(menu).hidden = true;
+    $(button).setAttribute("aria-expanded", "false");
+  }
+}
+const openMenuId = () => Object.keys(MENUS).find((id) => !$(id).hidden);
+
+// Your 10 latest sessions (GET /sessions), each a row you click to continue it.
+async function loadSessionList() {
+  const box = $("session-list");
+  box.replaceChildren(el("p", { class: "muted small" }, "Loading..."));
+  try {
+    const rows = await api("GET", "/sessions");
+    if (!rows.length) return box.replaceChildren(el("p", { class: "muted small" }, "No sessions yet."));
+    box.replaceChildren(...rows.map((s) => {
+      const day = new Date(s.started_at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      const row = el("button", { type: "button", class: "session-row", role: "menuitem" },
+        el("strong", {}, `${s.company} · ${s.role}`),
+        el("span", { class: "session-meta" },
+          el("span", {}, s.kind === "practice" ? "Practice" : "Interview"),
+          el("span", { class: `status-pill ${s.status}` }, STATUS[s.status] || s.status),
+          el("span", {}, day)));
+      row.onclick = () => { closeMenus(); openSession(s.session_id); };
+      if (s.session_id === state.sessionId) row.classList.add("current");
+      return row;
+    }));
+  } catch (err) {
+    if (!err.loggedOut) box.replaceChildren(el("p", { class: "muted small" }, "Your sessions couldn't be loaded."));
+  }
+}
+
+for (const [menu, button] of Object.entries(MENUS)) {
+  $(button).addEventListener("click", () => ($(menu).hidden ? openMenu(menu) : closeMenus()));
+}
+// A click anywhere outside the pill and its menus, or Escape, closes the open menu.
+document.addEventListener("click", (e) => {
+  if (openMenuId() && !e.target.closest(".account-bar")) closeMenus();
+});
+document.addEventListener("keydown", (e) => {
+  const open = openMenuId();
+  if (e.key === "Escape" && open) { closeMenus(); $(MENUS[open]).focus(); }
+});
+// "Delete my account…" opens the dialog (a modal: the page behind can't be clicked).
+$("open-account-dialog").addEventListener("click", () => {
+  closeMenus();
+  $("account-dialog").showModal();
+});
+$("close-account-dialog").addEventListener("click", () => $("account-dialog").close());
+$("account-dialog").addEventListener("close", () => showError("")); // Cancel or Escape: start clean next time
 
 // The login panel holds three forms: "login" (your email), "code" (the code it received) and
 // "password" (admins only).
@@ -1035,12 +1224,23 @@ function showLogin(message = "", form = "login") {
   $("code-form").hidden = form !== "code";
   $("password-form").hidden = form !== "password";
   showError(message);
-  ({ code: $("login-code"), password: $("password-email") }[form] || $("login-email")).focus();
+  ({ code: $("login-code"), password: $("password-input") }[form] || $("login-email")).focus();
+  if (form === "login") showGoogleButton();
+  showTurnstile();
 }
 
-async function sendLoginCode() {
+// "Continue": the server says whether to ask for a code (everyone) or a password (an admin who
+// has one). useCode = true always sends a code ("Send me a code instead", "Send a new code").
+async function continueWithEmail(useCode = false) {
   const email = $("login-email").value.trim();
-  await api("POST", "/auth/start", { email });
+  const turnstile_token = await turnstileToken();
+  const reply = await api("POST", "/auth/start", { email, use_code: useCode, turnstile_token });
+  if (reply.method === "password") {
+    $("password-email").value = email;
+    $("password-for").textContent = email;
+    $("password-input").value = "";
+    return showLogin("", "password");
+  }
   $("code-email").textContent = email;
   $("login-code").value = "";
   showLogin("", "code");
@@ -1048,16 +1248,106 @@ async function sendLoginCode() {
 
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  run("Sending your code...", sendLoginCode);
+  run("One moment...", () => continueWithEmail());
 });
-$("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", sendLoginCode); });
+$("resend-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending a new code...", () => continueWithEmail(true)); });
 $("other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
-$("to-password").addEventListener("click", (e) => {
-  e.preventDefault();
-  $("password-email").value = $("login-email").value;
-  showLogin("", "password");
-});
-$("to-code").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+$("password-other-email").addEventListener("click", (e) => { e.preventDefault(); showLogin("", "login"); });
+$("to-code").addEventListener("click", (e) => { e.preventDefault(); run("Sending your code...", () => continueWithEmail(true)); });
+
+// "Continue with Google". The server's GET /auth/config gives the app's Google client id (none:
+// no button). Google's script draws its own button; picking an account calls back with an ID
+// token (a signed note from Google: who you are, for this app), which POST /auth/google checks.
+// GET /auth/config: what the login screen offers (Google's client id, Turnstile's site key),
+// asked once; a failure is asked again next time.
+let loginConfig = null;
+function getLoginConfig() {
+  if (!loginConfig) loginConfig = api("GET", "/auth/config").catch((err) => { loginConfig = null; throw err; });
+  return loginConfig;
+}
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`${src} could not load.`));
+    document.head.append(script);
+  });
+}
+
+const googleLogin = { clientId: undefined, ready: null }; // not "google": Google's script owns that global name
+function loadGoogle() {
+  if (googleLogin.ready) return googleLogin.ready;
+  googleLogin.ready = (async () => {
+    const config = await getLoginConfig();
+    googleLogin.clientId = config.google_client_id;
+    if (!googleLogin.clientId) return false;
+    await loadScript("https://accounts.google.com/gsi/client");
+    window.google.accounts.id.initialize({
+      client_id: googleLogin.clientId,
+      callback: (reply) => run("Logging in...", async () => {
+        const user = await api("POST", "/auth/google", { credential: reply.credential });
+        setAccount(user);
+        showError("");
+        await startApp();
+      }),
+    });
+    return true;
+  })().catch(() => { googleLogin.ready = null; return false; }); // try again next time the screen shows
+  return googleLogin.ready;
+}
+async function showGoogleButton() {
+  if (!(await loadGoogle())) return;
+  const box = $("google-button");
+  box.replaceChildren();
+  window.google.accounts.id.renderButton(box, {
+    theme: currentTheme() === "dark" ? "filled_black" : "outline",
+    size: "large", shape: "pill", text: "continue_with", logo_alignment: "center",
+    width: Math.min(400, box.clientWidth || 320),
+  });
+  $("google-box").hidden = false;
+}
+
+// Cloudflare Turnstile (Phase 5): "are you a person?" before the server emails a code. Only when
+// GET /auth/config has a site key (none on your laptop). Cloudflare's script draws a small widget
+// in #turnstile-box, which most people never have to click; it hands back a token that
+// POST /auth/start sends to the server. A token works once, so each use resets the widget.
+const human = { ready: null, widget: null, token: "", waiting: [] };
+function loadTurnstile() {
+  if (human.ready) return human.ready;
+  human.ready = (async () => {
+    const config = await getLoginConfig();
+    if (!config.turnstile_site_key) return false;
+    await loadScript("https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit");
+    const done = (token) => { human.token = token; human.waiting.splice(0).forEach((resolve) => resolve()); };
+    human.widget = window.turnstile.render("#turnstile-box", {
+      sitekey: config.turnstile_site_key,
+      appearance: "interaction-only", // shown only when Cloudflare needs a click
+      theme: currentTheme() === "dark" ? "dark" : "light",
+      callback: done,
+      "expired-callback": () => { human.token = ""; },
+      "error-callback": () => { human.token = ""; },
+    });
+    return true;
+  })().catch(() => { human.ready = null; return false; });
+  return human.ready;
+}
+function showTurnstile() { loadTurnstile(); }
+// The token for the next POST /auth/start ("" when Turnstile is off), waiting up to 30 s for it.
+async function turnstileToken() {
+  if (!(await loadTurnstile())) return "";
+  if (!human.token) {
+    await new Promise((resolve, reject) => {
+      human.waiting.push(resolve);
+      setTimeout(() => reject(new Error("The check that you're a person didn't finish. Reload the page and try again.")), 30000);
+    });
+  }
+  const token = human.token;
+  human.token = "";
+  window.turnstile.reset(human.widget); // a fresh token for "Send a new code"
+  return token;
+}
 
 $("password-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -1071,7 +1361,7 @@ $("password-form").addEventListener("submit", (e) => {
   });
 });
 
-// The month's spend in the header, and the recording limit. Failing to load it is not an error.
+// The header's "what's left" (or, for an admin, the month's budget), and the recording limit. Failing to load it is not an error.
 const dollars = (x) => `$${x.toFixed(2)}`;
 async function loadUsage() {
   try {
@@ -1084,13 +1374,15 @@ async function loadUsage() {
       box.classList.toggle("spend-warn", u.budget.warning);
       box.title = u.budget.budgets.map((b) => `${b.name}: ${dollars(b.spent)} of ${dollars(b.budget)}`).join("\n");
     } else {
-      const you = u.you;
-      const left = you.practice_left ? "practice next"
-        : `${you.interviews_left} interview${you.interviews_left === 1 ? "" : "s"} left`;
-      box.textContent = `This month: ${dollars(you.month_usd)} · ${left}`;
+      // a user: what's left, never money ("Practice + 2 interviews left", "No interviews left")
+      const you = u.you, n = you.interviews_left;
+      const interviews = n ? `${n} interview${n === 1 ? "" : "s"}` : "";
+      const parts = [you.practice_left ? "Practice" : "", interviews].filter(Boolean);
+      box.textContent = parts.length ? `${parts.join(" + ")} left` : "No interviews left";
       box.title = `Interviews today: ${you.interviews_today} of ${you.interviews_per_day}`;
     }
     box.hidden = false;
+    $("menu-spend").textContent = box.textContent; // the same line under your email in the menu
     showQuota(u.you, u.limits);
   } catch (_) {}
 }

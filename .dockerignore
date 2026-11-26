@@ -2,12 +2,14 @@
 #
 # The Dockerfile copies the project into the image (COPY . .), and in Phase 5 that image is pushed
 # to AWS. So anything personal or secret must be listed here, or it would end up inside the image:
-# - .env: API keys are passed in at run time (docker-compose.yml locally, Secrets Manager on AWS).
+# - .env: API keys are passed in at run time (docker-compose.yml locally; on AWS a .env written
+#   on the server from SSM Parameter Store).
 # - my_docs/, evals/private/, evals/audio/: your real CV, job posts, emails, the eval cases built
 #   from your real answers, and your recordings. Personal data: never in an image.
 # - evals/*/runs/: local eval summaries.
 # - .git, .venv, __pycache__, .pytest_cache: history and local caches the app does not need.
-# - infra: Terraform files (Phase 5), used from your machine or CI only.
+# - infra, .github: Terraform files and GitHub Actions workflows (Phase 5), used from your
+#   machine or GitHub only.
 # - logo/: design files, not used by the app.
 # When you add a folder with personal data, add it here and to .gitignore.
 
@@ -23,5 +25,6 @@ evals/*/runs
 __pycache__
 .pytest_cache
 infra
+.github
 logo
 brief_edit.json

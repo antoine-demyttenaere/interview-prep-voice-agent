@@ -63,7 +63,7 @@ class Interview(Base):
     mode: Mapped[str] = mapped_column(String(40), default="behavioral")
     language: Mapped[str] = mapped_column(String(5), default="en")  # en | fr | es
     brief: Mapped[dict | None] = mapped_column(JSONB)
-    brief_status: Mapped[str] = mapped_column(String(20), default="none")  # none | approved
+    brief_status: Mapped[str] = mapped_column(String(20), default="none")  # none | draft | approved
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     documents: Mapped[list["Document"]] = relationship(back_populates="interview")
@@ -150,6 +150,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # first code login
     password_hash: Mapped[str | None] = mapped_column(String(200))  # admins only (Phase 4.8): Argon2
+    # Google's id for this person ("sub"), set the first time they continue with Google. It never
+    # changes, even if their Gmail address does.
+    google_sub: Mapped[str | None] = mapped_column(String(255), unique=True)
     # How many sessions of each kind this person may start in all (Phase 4.7; admins have no
     # quota). They never reset by themselves: manage_users.py grant adds more.
     practice_quota: Mapped[int] = mapped_column(Integer, default=1)

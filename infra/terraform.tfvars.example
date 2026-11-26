@@ -1,0 +1,10 @@
+# terraform.tfvars.example - template for terraform.tfvars, your own values for infra/ (copy it, then edit).
+#
+# terraform.tfvars is git-ignored: it holds your email. Terraform reads it by itself on every
+# plan / apply. Every other input has a default in main.tf.
+
+alert_email = "you@example.com" # the AWS Budget's alerts
+
+# Later (step 3), once the domain exists:
+# site_address = "interview.example.com"
+# mail_from    = "Practiss <no-reply@example.com>"

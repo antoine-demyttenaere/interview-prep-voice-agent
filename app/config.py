@@ -9,6 +9,10 @@ build the Settings object once and return the same one afterwards.
 
 To change a model, a voice or a limit: set it in .env (e.g. NUM_QUESTIONS=3), then
 `docker compose up -d --force-recreate api` so the container picks up the new value.
+
+ENVIRONMENT=production (set by docker-compose.prod.yml, Phase 5) turns on check_production():
+the server refuses to start without a real SECRET_KEY, secure cookies, a real email provider,
+Turnstile keys and a real database password.
 """
 
 from functools import lru_cache
@@ -66,9 +70,22 @@ class Settings(BaseSettings):
     codes_per_ip: int = 10
     login_max_failures: int = 5
     login_max_failures_per_ip: int = 20
-    # Email (app/mail/): "console" prints each email in the server logs (local use).
+    # Sign in with Google (app/auth/google.py): the OAuth client id from Google Cloud Console.
+    # Empty = no "Continue with Google" button.
+    google_client_id: str = ""
+    # Email (app/mail/): "console" prints each email in the server logs (local use), "ses" sends
+    # it with Amazon SES (on AWS, Phase 5) in aws_region, with the server's IAM role (no keys).
     mail_provider: str = "console"
     mail_from: str = "Interview Practice <no-reply@localhost>"
+    aws_region: str = "eu-west-1"
+    # Cloudflare Turnstile (app/auth/turnstile.py): a "are you a person?" check on "Continue",
+    # so bots can't make the server send emails. Both empty = off (local use).
+    turnstile_site_key: str = ""  # public, shown to the page
+    turnstile_secret_key: str = ""  # private, used by the server to check the page's token
+
+    # "local" (your laptop) or "production" (AWS, docker-compose.prod.yml). In production the
+    # server refuses to start when a setting would be unsafe there (check_production below).
+    environment: str = "local"
 
     # Cost control (Phase 4.5, app/costs/budget.py). Budgets in US dollars for all users
     # together; at budget_warn_ratio (80%) the page warns the admin, at 100% new interviews
@@ -101,6 +118,36 @@ class Settings(BaseSettings):
     def psycopg_url(self) -> str:
         """Plain libpq URL (no SQLAlchemy driver suffix) for psycopg / the checkpointer."""
         return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+    def production_problems(self) -> list[str]:
+        """What is unsafe for production in these settings (empty list = ready). Each problem
+        is one sentence saying what to set."""
+        problems = []
+        if len(self.secret_key) < 32:
+            problems.append("SECRET_KEY must be set to a long random value (32+ characters): "
+                            "python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        if not self.cookie_secure:
+            problems.append("COOKIE_SECURE must be true (the site is served over HTTPS).")
+        if self.mail_provider == "console":
+            problems.append("MAIL_PROVIDER must be a real provider (ses): with console, login "
+                            "codes only reach the server logs.")
+        if not (self.turnstile_site_key and self.turnstile_secret_key):
+            problems.append("TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY must be set, so bots "
+                            "can't make the server send emails.")
+        if ":app@" in self.database_url:
+            problems.append("The database password must not be the local one (\"app\"): set "
+                            "POSTGRES_PASSWORD.")
+        return problems
+
+
+def check_production(settings: "Settings") -> None:
+    """Called once when the server starts (app/main.py). In production, refuse to start with
+    unsafe settings: better a clear error in the logs than a site that leaks or can't log in."""
+    if settings.environment != "production":
+        return
+    problems = settings.production_problems()
+    if problems:
+        raise RuntimeError("Unsafe settings for ENVIRONMENT=production:\n- " + "\n- ".join(problems))
 
 
 @lru_cache

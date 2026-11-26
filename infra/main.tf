@@ -6,6 +6,8 @@
 #   iam.tf       what the server may do in AWS (IAM role): Session Manager, SES, its SSM parameters
 #   server.tf    the EC2 server, its disk, its fixed public IP, weekly snapshots
 #   budget.tf    an email when the month's AWS bill heads past $10
+#   github.tf    lets GitHub Actions deploy (OIDC, a role that can only run the deploy)
+#   deploy.sh    runs on the server: builds .env from SSM, pulls the image, restarts the app
 #   user_data.sh.tftpl  the script the server runs at its first boot (Docker, swap, the app)
 # Secrets (API keys, SECRET_KEY, POSTGRES_PASSWORD) are NOT here: set-secrets.ps1 stores them in
 # SSM Parameter Store, so they never appear in Terraform's files or state.

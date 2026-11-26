@@ -164,10 +164,14 @@ infra/                 The AWS setup in Terraform (Phase 5); see 13c
   iam.tf               What the server may do: Session Manager, send email with SES, read its secrets
   server.tf            The EC2 server (t4g.micro), its encrypted disk, its fixed IP, weekly snapshots
   budget.tf            Emails you when the month's AWS bill heads past $10
-  user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app, deploy.sh
+  github.tf            Lets GitHub Actions deploy with OIDC: a role that can only run the deploy on the server
+  user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app's folder, deploy.sh
+  deploy.sh            Runs on the server: .env from the SSM secrets, pull the image, restart, wait for /health
   set-secrets.ps1      Stores the API keys and secrets in SSM Parameter Store (typed, never in git)
   terraform.tfvars.example  Template for your own values (your alert email)
 Dockerfile             How the api image is built
+.github/workflows/deploy.yml  On each push to main: test in the ARM image, push it to GHCR, deploy it (see 13d)
+.gitattributes         Keeps Linux line endings for the files that run on the server
 requirements.txt       Python packages
 alembic.ini            Alembic settings
 pytest.ini             pytest settings
@@ -653,7 +657,7 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 
 **The first boot** ([user_data.sh.tftpl](infra/user_data.sh.tftpl)): AWS runs this script once. It installs Docker and the Compose plugin, turns on automatic security updates, adds a 2 GB swap file (disk used as spare memory), writes `/opt/interview` (the Compose file and Caddyfile from this repo, `settings.env` with the non-secret settings, and `deploy.sh`), then runs `deploy.sh`.
 
-**deploy.sh** (on the server) builds `.env` from `settings.env` plus every secret stored under `/interview-prep/prod` in **SSM Parameter Store** (AWS's key-value store, encrypted), pulls the image from GitHub's registry and (re)starts the containers. Run it again after changing a secret. Its log is `/var/log/interview-deploy.log`.
+**deploy.sh** ([infra/deploy.sh](infra/deploy.sh), copied to the server) builds `.env` from `settings.env` plus every secret stored under `/interview-prep/prod` in **SSM Parameter Store** (AWS's key-value store, encrypted), pulls the image from GitHub's registry, (re)starts the containers, reloads Caddy and waits until the api is healthy (else it prints the api's last logs and fails). Given a tag (`deploy.sh <commit id>`), it first switches `IMAGE_TAG` to that version. Run it again after changing a secret. Its log is `/var/log/interview-deploy.log`.
 
 **Secrets never touch Terraform.** If Terraform created them, their values would sit in its state file. Instead, [set-secrets.ps1](infra/set-secrets.ps1) stores them with the AWS CLI: it generates `SECRET_KEY` and `POSTGRES_PASSWORD` itself (the database password is never replaced, because the database was created with it) and asks you for each API key, typed hidden.
 
@@ -675,6 +679,24 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 | redeploy after changing a secret | in that shell: `sudo /opt/interview/deploy.sh`, then `sudo tail /var/log/interview-deploy.log` |
 | stop paying for the server while not using it | `aws ec2 stop-instances --instance-ids <instance_id>` (`start-instances` to resume; the disk and IP are still billed, about $5 a month) |
 | remove everything (except the state bucket) | `infra`: `terraform destroy` (the database goes with the server; the snapshots stay until deleted) |
+
+### 13d. Deploys from GitHub Actions (Phase 5)
+
+Every push to `main` deploys itself, with [.github/workflows/deploy.yml](.github/workflows/deploy.yml). **GitHub Actions** runs it on GitHub's machines (runners), in two jobs:
+
+1. **build** (on an ARM runner, because the server is ARM): builds the image, runs the whole test suite inside it against a Postgres + pgvector container, and only if every test passes pushes it to GHCR, tagged with the commit id and as `latest`. A failing test means nothing is published or deployed.
+2. **deploy**: logs in to AWS with **OIDC** and asks the server, through **SSM Run Command** (running a command on a server through the AWS API, no SSH), to download `docker-compose.prod.yml`, the Caddyfile and `infra/deploy.sh` at this commit, then run `deploy.sh <commit id>`. It prints the server's output and finally checks `/health` from the internet.
+
+**OIDC, or why GitHub holds no AWS key** ([infra/github.tf](infra/github.tf)): for each run, GitHub signs a short token saying which repository and branch is running. AWS trusts GitHub's signature (the OIDC provider) and trades a token from *this repository's main branch only* for one hour of the `interview-prep-github-deploy` role, which can do one thing: run a command on this server and read its result. A fork, another branch or another repository gets nothing, and there is no key to leak.
+
+**Setup, once:** after `terraform apply`, three repository variables (Settings > Secrets and variables > Actions > Variables; not secrets, nothing in them is sensitive): `AWS_DEPLOY_ROLE_ARN` and `AWS_INSTANCE_ID` (from `terraform output`), and `SITE_URL` (`http://<public_ip>` until the domain exists). After the first image is pushed, make the GHCR package public (on GitHub: your profile > Packages > the package > Package settings > Change visibility), so the server can pull it without a login. The code is public anyway.
+
+| I want to... | How |
+| --- | --- |
+| deploy | push (or merge) to `main` |
+| deploy again without a change | GitHub > Actions > Deploy > Run workflow |
+| see a deploy | GitHub > Actions > the run (the server's output is in the "Deploy on the server" step) |
+| roll back | GitHub > Actions > the last good run > Re-run all jobs (it redeploys that commit's image), or in a server shell `sudo /opt/interview/deploy.sh <good commit id>` |
 
 **LangGraph Studio** (optional, not tested yet) shows the graph visually and lets you run steps one by one. [langgraph.json](langgraph.json) tells it where the graph is (`app/graph/build.py:graph`) and to load `.env`. To use it, install the CLI on your machine (`pip install "langgraph-cli[inmem]"`), then run `langgraph dev` in the project folder.
 
@@ -753,6 +775,8 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 - **429 / Too Many Requests**: the HTTP answer meaning "slow down, try again later".
 - **Middleware**: code that runs around every request, before and after the route.
 - **ON DELETE CASCADE**: a rule on a foreign key: when the row it points to is deleted, the database deletes this row too.
+- **OIDC (OpenID Connect)**: a standard for signed identity tokens; here GitHub signs "this run is repository X, branch main", and AWS trusts that signature instead of a stored key.
+- **SSM Run Command**: runs a shell command on a server through the AWS API (no SSH, no open port), with its output kept for reading.
 - **Terraform state**: Terraform's record of the resources it created and their ids, so the next run knows what exists; kept in S3.
 - **Security group**: AWS's firewall around a server: which ports may be reached, from where.
 - **IAM role**: a set of AWS permissions given to a machine or a service instead of a person; programs on that machine get short-lived credentials from it, so no keys are stored.
@@ -787,7 +811,7 @@ Postgres is on port **5433** on your machine, not the usual 5432. The database n
 | 4.7. Open sign-up by email code, 1 practice with your own documents, 2 interviews, "Request more" (replaces invite codes and passwords) | built and tested: log in and sign up with an emailed code (no passwords or invites), delete-my-account by code, CLI code login; the practice (3 questions, Haiku feedback), quotas of 1 practice and 2 interviews, "Request more" and grant, the practice budget. Sending real emails (Amazon SES) comes with Phase 5. The final check (a new person signs up and uses everything) is yours to run |
 | 4.8. Admin login with a password; no per-user limits for admins | built and tested: set-password / clear-password, "Admin? Log in with a password", CLI with INTERVIEW_PASSWORD; admins skip the daily and revision limits, budgets and size limits still apply. Setting your own password and the check are yours to do |
 | 4.9. Login and header polish: one email field that asks admins for their password, Continue with Google, the Practiss logo, what's left in the header, instant return to a brief | built and tested: admin detection on "Continue", `POST /auth/google` (migration 0013), the logo (top left, back to a new interview) and app icon, the header shows users what's left and no money, a draft brief is reused with no Claude call. Creating the Google OAuth client id and the check in a browser are yours to do |
-| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) written and checked (`terraform validate`, a `plan` of 20 resources, the boot scripts' syntax); not applied yet |
+| 5. AWS with Terraform (one EC2 server) | in progress. Step 1 (production mode) built and tested: docker-compose.prod.yml with Caddy, settings checked at start, Amazon SES, Cloudflare Turnstile, the visitor's IP through Caddy, memory measured and capped; tried on the laptop. Step 2 (Terraform) applied: the server runs and answers Session Manager; your AWS login is IAM Identity Center with MFA. Step 4 (deploys from GitHub Actions with OIDC) written: tests in the ARM image, push to GHCR, deploy through SSM Run Command |
 | 6. Streaming, live turn detection, personas and more | planned |
 
 The details of each phase are in [plan.md](plan.md).

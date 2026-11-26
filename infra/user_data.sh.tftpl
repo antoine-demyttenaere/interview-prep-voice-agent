@@ -6,13 +6,13 @@
 # 1. waits for internet access (the fixed IP is attached a few seconds after the start);
 # 2. installs Docker and the Compose plugin, and turns on automatic security updates;
 # 3. adds a 2 GB swap file: disk used as spare memory, the safety margin of a 1 GB server;
-# 4. writes the app's folder $${app_dir}: docker-compose.prod.yml and Caddyfile (copied from
-#    this repo), settings.env (the non-secret settings from Terraform), and deploy.sh;
+# 4. writes the app's folder $${app_dir}: docker-compose.prod.yml, Caddyfile and deploy.sh
+#    (infra/deploy.sh), copied from this repo, and settings.env (the non-secret settings);
 # 5. runs deploy.sh, which builds .env from settings.env plus the secrets in SSM Parameter
-#    Store ($${ssm_prefix}, set with infra/set-secrets.ps1), pulls the image and starts the app.
-# deploy.sh stays on the server: run it again after changing a secret, and GitHub Actions runs
-# it for each deploy (step 4). Its output goes to /var/log/interview-deploy.log, and this
-# script's to /var/log/cloud-init-output.log (read them in a Session Manager shell).
+#    Store (set with infra/set-secrets.ps1), pulls the image and starts the app.
+# Each deploy from GitHub Actions replaces the three copied files with their version in git,
+# then runs deploy.sh again. Logs: /var/log/interview-deploy.log for deploy.sh, and
+# /var/log/cloud-init-output.log for this script (read them in a Session Manager shell).
 # Editing this file doesn't change a running server (server.tf ignores it); only a new one.
 set -euo pipefail
 
@@ -59,29 +59,7 @@ IMAGE_TAG=${image_tag}
 LANGSMITH_TRACING=true
 SETTINGS
 
-cat > deploy.sh <<'DEPLOY'
-#!/bin/bash
-# deploy.sh - builds .env (settings.env + the secrets in SSM Parameter Store), pulls the image, (re)starts the app.
-# Run as root: sudo /opt/interview/deploy.sh   Log: /var/log/interview-deploy.log
-set -euo pipefail
-exec >> /var/log/interview-deploy.log 2>&1
-echo "=== deploy $(date -u +%FT%TZ)"
-cd APP_DIR
-umask 077
-{
-  cat settings.env
-  # Each parameter /interview-prep/prod/NAME becomes NAME=value
-  aws ssm get-parameters-by-path --region REGION --path SSM_PREFIX --with-decryption \
-    --query 'Parameters[*].[Name,Value]' --output text |
-    while IFS=$'\t' read -r name value; do echo "$${name##*/}=$value"; done
-} > .env.new
-mv .env.new .env
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d --no-build --remove-orphans
-docker image prune -f
-echo "=== done"
-DEPLOY
-sed -i "s|APP_DIR|${app_dir}|; s|REGION|${region}|; s|SSM_PREFIX|${ssm_prefix}|" deploy.sh
+echo '${deploy_b64}' | base64 -d > deploy.sh
 chmod 700 deploy.sh
 
 # 5. Start the app (a missing image or secret is logged; fix it, then run deploy.sh again)

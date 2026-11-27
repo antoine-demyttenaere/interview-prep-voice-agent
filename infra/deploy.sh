@@ -8,8 +8,10 @@
 #
 # What it does:
 # 1. With a tag argument, writes IMAGE_TAG=<tag> into settings.env (the non-secret settings).
-# 2. Builds .env: settings.env, then every parameter under /interview-prep/prod in SSM Parameter
-#    Store (set with infra/set-secrets.ps1) as NAME=value. Read with the server's IAM role.
+# 2. Builds .env: every parameter under /interview-prep/prod in SSM Parameter Store as
+#    NAME=value (the secrets from infra/set-secrets.ps1, SITE_ADDRESS and MAIL_FROM from
+#    infra/domain.tf), read with the server's IAM role, plus the lines of settings.env whose
+#    name SSM doesn't have: when both have a setting, SSM wins.
 # 3. Pulls the images and starts the database first. If it is empty (a new server, e.g. after
 #    `server.ps1 up`), loads the latest backup from S3 (pg_restore), before the app's
 #    migrations run. A database that already has tables is never touched.
@@ -35,13 +37,16 @@ fi
 REGION=$(sed -n 's/^AWS_REGION=//p' settings.env)
 
 umask 077
+# Each parameter /interview-prep/prod/NAME becomes NAME=value
+aws ssm get-parameters-by-path --region "$REGION" --path "$SSM_PREFIX" --with-decryption \
+  --query 'Parameters[*].[Name,Value]' --output text |
+  while IFS=$'\t' read -r name value; do echo "${name##*/}=$value"; done > .env.ssm
 {
-  cat settings.env
-  # Each parameter /interview-prep/prod/NAME becomes NAME=value
-  aws ssm get-parameters-by-path --region "$REGION" --path "$SSM_PREFIX" --with-decryption \
-    --query 'Parameters[*].[Name,Value]' --output text |
-    while IFS=$'\t' read -r name value; do echo "${name##*/}=$value"; done
+  # settings.env first, without the names SSM also has (SSM wins, e.g. SITE_ADDRESS), then SSM
+  grep -v -f <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/^\1=/p' .env.ssm) settings.env || true
+  cat .env.ssm
 } > .env.new
+rm -f .env.ssm
 grep -q '^POSTGRES_PASSWORD=' .env.new || { echo "No POSTGRES_PASSWORD in SSM: run infra/set-secrets.ps1 first"; exit 1; }
 mv .env.new .env
 

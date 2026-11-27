@@ -5,6 +5,5 @@
 
 alert_email = "you@example.com" # the AWS Budget's alerts
 
-# Later (step 3), once the domain exists:
-# site_address = "interview.example.com"
-# mail_from    = "Practiss <no-reply@example.com>"
+# The domain (default practissinterview.com, infra/domain.tf); registered in Route 53 first:
+# domain = "practissinterview.com"

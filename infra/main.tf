@@ -6,6 +6,8 @@
 #   iam.tf       what the server may do in AWS (IAM role): Session Manager, SES, its SSM parameters
 #   server.tf    the EC2 server, its disk, its fixed public IP, weekly snapshots (switch: server_enabled)
 #   backup.tf    the S3 bucket for the nightly database backups (outlives the server)
+#   domain.tf    the domain: DNS record to the server, SES sending (DKIM, SPF, DMARC), the
+#                site address and sender as SSM settings
 #   budget.tf    an email when the month's AWS bill heads past $10
 #   github.tf    lets GitHub Actions deploy (OIDC, a role that can only run the deploy)
 #   deploy.sh    runs on the server: builds .env from SSM, restores a backup into an empty
@@ -63,18 +65,6 @@ variable "monthly_budget_usd" {
   description = "AWS hosting budget per month, in US dollars (the paid APIs have their own, in the app)"
   type        = number
   default     = 10
-}
-
-variable "site_address" {
-  description = "What Caddy serves: \":80\" (plain HTTP on the IP, until a domain exists), then the domain (step 3)"
-  type        = string
-  default     = ":80"
-}
-
-variable "mail_from" {
-  description = "Sender of the login emails; its domain must be verified in SES (step 3)"
-  type        = string
-  default     = "Practiss <no-reply@example.com>"
 }
 
 variable "image_tag" {

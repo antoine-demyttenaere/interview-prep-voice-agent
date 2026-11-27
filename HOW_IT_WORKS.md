@@ -167,6 +167,7 @@ infra/                 The AWS setup in Terraform (Phase 5); see 13c
   github.tf            Lets GitHub Actions deploy with OIDC: a role that can only run the deploy on the server
   user_data.sh.tftpl   The server's first-boot script: Docker, swap, updates, the app's folder, deploy.sh
   backup.tf            The S3 bucket for the database backups (outlives the server)
+  domain.tf            practissinterview.com: DNS record to the server, SES sending (DKIM, SPF, DMARC), SITE_ADDRESS / MAIL_FROM in SSM
   deploy.sh            Runs on the server: .env from the SSM secrets, restore a backup into an empty database, pull, restart, wait for /health
   backup.sh            Runs on the server every night and before `server.ps1 down`: pg_dump to S3
   server.ps1           Your on/off switch: status / down (backup, then destroy the server) / up (rebuild and restore)
@@ -660,6 +661,12 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 
 **Switching the server off and on** ([server.ps1](infra/server.ps1)): the Terraform variable `server_enabled` is the switch. `./server.ps1 down` first runs `backup.sh` on the server (if it fails, nothing is destroyed), then sets the switch to `false` in `server.auto.tfvars` and runs `terraform apply`, which removes the server, its disk and its IP (you type "yes" after reading the plan). What's left costs about $0.50 a month (the domain's DNS zone) and keeps everything needed to come back: the backups, the secrets in SSM, the network, the roles, the budget, GitHub's deploy access. `./server.ps1 up` sets the switch back to `true` and applies; the new server's first boot installs Docker, finds an empty database and loads `latest.dump` into it before the app starts (`deploy.sh` never touches a database that already has tables), then starts the latest image. The deploy workflow finds the server by its Name tag, so a new server needs no change on GitHub, and a push while the server is off just publishes the image.
 - **A budget** (`budget.tf`): an email at 80% of $10 spent, and when AWS forecasts the month will end above $10.
+- **The domain** ([domain.tf](infra/domain.tf)): `practissinterview.com`, registered by hand in the Route 53 console (it needs a card and contact details; about $16 a year), which creates its **hosted zone** (where the domain's DNS records live, $0.50 a month). Terraform adds to that zone:
+  - an **A record** pointing the domain to the server's Elastic IP. Caddy then gets the HTTPS certificate from Let's Encrypt by itself. The record exists only while the server does, and follows the new IP after `server.ps1 up`;
+  - the records that let **Amazon SES** send email from the domain, and make mail providers trust it, so login codes don't land in spam: **DKIM** (3 records publishing the keys that check SES's signature on each email), **SPF** with a custom "MAIL FROM" domain `mail.practissinterview.com` (says SES may send for us) and **DMARC** (what to do with an email that fails both; here only report).
+  - Two settings in SSM, `SITE_ADDRESS` (what Caddy serves) and `MAIL_FROM` (`Practiss <no-reply@practissinterview.com>`). `deploy.sh` puts every SSM parameter in the server's `.env`; when SSM and `settings.env` both have a setting, SSM wins.
+
+  A new SES account is in the **sandbox**: it only sends to addresses verified in SES, 200 a day, until AWS approves a request to leave it ("request production access" in the SES console, usually answered within a day).
 
 **The first boot** ([user_data.sh.tftpl](infra/user_data.sh.tftpl)): AWS runs this script once. It installs Docker and the Compose plugin, turns on automatic security updates, adds a 2 GB swap file (disk used as spare memory), writes `/opt/interview` (the Compose file and Caddyfile from this repo, `settings.env` with the non-secret settings, and `deploy.sh`), then runs `deploy.sh`.
 
@@ -680,7 +687,7 @@ The AWS setup is written in Terraform, in [infra/](infra/), so every piece can b
 | store the secrets | `infra`: `./set-secrets.ps1` (one value: `./set-secrets.ps1 NAME`; what is set: `-List`) |
 | see what would change (free) | `infra`: `terraform plan` |
 | create or update the AWS resources | `infra`: `terraform apply` (shows the plan, then asks "yes") |
-| check the app | `curl.exe http://<public_ip>/health` (`terraform output public_ip`) |
+| check the app | `curl.exe https://practissinterview.com/health` (or `http://<public_ip>/health`, `terraform output public_ip`) |
 | open a shell on the server | `terraform output shell` gives the command (needs the AWS CLI's Session Manager plugin) |
 | redeploy after changing a secret | in that shell: `sudo /opt/interview/deploy.sh`, then `sudo tail /var/log/interview-deploy.log` |
 | see whether the server is on, and the last backup | `infra`: `./server.ps1 status` |

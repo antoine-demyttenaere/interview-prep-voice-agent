@@ -55,15 +55,13 @@ resource "aws_instance" "server" {
   # gzip-compressed (cloud-init unpacks it): the script and its four files are over AWS's 16 KB
   # limit for user data, about a third of it once compressed.
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
-    region       = var.region
-    app_dir      = local.app_dir
-    image_tag    = var.image_tag
-    site_address = var.site_address
-    mail_from    = var.mail_from
-    compose_b64  = base64encode(file("${path.module}/../docker-compose.prod.yml"))
-    caddy_b64    = base64encode(file("${path.module}/../Caddyfile"))
-    deploy_b64   = base64encode(file("${path.module}/deploy.sh"))
-    backup_b64   = base64encode(file("${path.module}/backup.sh"))
+    region      = var.region
+    app_dir     = local.app_dir
+    image_tag   = var.image_tag
+    compose_b64 = base64encode(file("${path.module}/../docker-compose.prod.yml"))
+    caddy_b64   = base64encode(file("${path.module}/../Caddyfile"))
+    deploy_b64  = base64encode(file("${path.module}/deploy.sh"))
+    backup_b64  = base64encode(file("${path.module}/backup.sh"))
   }))
 
   tags = { Name = local.name }

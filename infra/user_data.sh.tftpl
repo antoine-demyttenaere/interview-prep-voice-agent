@@ -52,10 +52,9 @@ echo '${caddy_b64}' | base64 -d > Caddyfile
 
 cat > settings.env <<'SETTINGS'
 # settings.env - the non-secret production settings, written by Terraform's user data.
+# SITE_ADDRESS and MAIL_FROM come from SSM (infra/domain.tf): deploy.sh adds them to .env.
 MAIL_PROVIDER=ses
-MAIL_FROM=${mail_from}
 AWS_REGION=${region}
-SITE_ADDRESS=${site_address}
 IMAGE_TAG=${image_tag}
 LANGSMITH_TRACING=true
 SETTINGS
